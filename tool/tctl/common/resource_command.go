@@ -80,6 +80,7 @@ import (
 	scopedutils "github.com/gravitational/teleport/lib/scopes/utils"
 	"github.com/gravitational/teleport/lib/service/servicecfg"
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/subca"
 	"github.com/gravitational/teleport/lib/utils"
 	logutils "github.com/gravitational/teleport/lib/utils/log"
 	commonclient "github.com/gravitational/teleport/tool/tctl/common/client"
@@ -235,6 +236,10 @@ func (rc *ResourceCommand) Initialize(app *kingpin.Application, _ *tctlcfg.Globa
 		scopedaccess.KindScopedRoleAssignment:        rc.updateScopedRoleAssignment,
 		scopedaccess.KindScopedToken:                 rc.updateScopedToken,
 		types.KindWorkloadCluster:                    rc.updateWorkloadCluster,
+	}
+	if subca.Enabled() {
+		rc.CreateHandlers[types.KindCertAuthorityOverride] = rc.createCAOverride
+		rc.UpdateHandlers[types.KindCertAuthorityOverride] = rc.updateCAOverride
 	}
 	rc.config = config
 
@@ -1983,6 +1988,10 @@ func (rc *ResourceCommand) Delete(ctx context.Context, client *authclient.Client
 		return trace.BadParameter("provide a full resource name to delete, for example:\n$ tctl rm cluster/east\n")
 	}
 
+	errNotSupported := func() error {
+		return trace.BadParameter("deleting resources of type %q is not supported", rc.ref.Kind)
+	}
+
 	switch rc.ref.Kind {
 	case types.KindNode:
 		if err = client.DeleteNode(ctx, apidefaults.Namespace, rc.ref.Name); err != nil {
@@ -2514,8 +2523,13 @@ func (rc *ResourceCommand) Delete(ctx context.Context, client *authclient.Client
 		return trace.Wrap(rc.deleteInferenceSecret(ctx, client))
 	case types.KindInferencePolicy:
 		return trace.Wrap(rc.deleteInferencePolicy(ctx, client))
+	case types.KindCertAuthorityOverride:
+		if !subca.Enabled() {
+			return errNotSupported()
+		}
+		return trace.Wrap(rc.deleteCAOverride(ctx, client))
 	default:
-		return trace.BadParameter("deleting resources of type %q is not supported", rc.ref.Kind)
+		return errNotSupported()
 	}
 	return nil
 }
@@ -3979,6 +3993,11 @@ func (rc *ResourceCommand) getCollection(ctx context.Context, client *authclient
 			return nil, trace.Wrap(err)
 		}
 		return &workloadClusterCollection{workloadClusters: clusters}, nil
+	case types.KindCertAuthorityOverride:
+		if !subca.Enabled() {
+			break
+		}
+		return rc.getCAOverrides(ctx, client)
 	}
 	return nil, trace.BadParameter("getting %q is not supported", rc.ref.String())
 }
