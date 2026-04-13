@@ -19,7 +19,7 @@
 import styled, { useTheme } from 'styled-components';
 
 import { Flex } from 'design';
-import { Clipboard, FolderShared } from 'design/Icon';
+import { Clipboard, FolderShared, Windows } from 'design/Icon';
 import { HoverTooltip } from 'design/Tooltip';
 import ActionMenu from 'shared/components/DesktopSession/ActionMenu';
 import { AlertDropdown } from 'shared/components/DesktopSession/AlertDropdown';
@@ -33,15 +33,16 @@ export function DesktopSessionControls({
 }) {
   const theme = useTheme();
 
-  const primaryOnTrue = (active: boolean) => ({
-    color: active
-      ? theme.colors.text.primaryInverse
-      : `${theme.colors.text.primaryInverse}80`,
-  });
+  const iconColor = (active: boolean) =>
+    active ? theme.colors.text.main : theme.colors.text.muted;
 
   return (
-    <Pill alignItems="center" gap={2}>
-      {status.latencyStats && <LatencyDiagnostic latency={status.latencyStats} />}
+    <Inset alignItems="center" gap={0}>
+      {/* TODO: use icon from unified resources */}
+      <Windows size="large" color="#0078D4" mx={2} />
+      {status.latencyStats && (
+        <LatencyDiagnostic latency={status.latencyStats} />
+      )}
       <HoverTooltip
         tipContent={directorySharingTooltip(
           status.canShareDirectory,
@@ -51,22 +52,25 @@ export function DesktopSessionControls({
       >
         <FolderShared
           size="small"
-          style={primaryOnTrue(status.isSharingDirectory)}
+          padding="8px"
+          color={iconColor(status.isSharingDirectory)}
         />
       </HoverTooltip>
       <HoverTooltip tipContent={status.clipboardSharingMessage} placement="top">
         <Clipboard
           size="small"
-          style={primaryOnTrue(status.isSharingClipboard)}
+          padding="8px"
+          color={iconColor(status.isSharingClipboard)}
         />
       </HoverTooltip>
       <AlertDropdown
         alerts={status.alerts}
         onRemoveAlert={status.onRemoveAlert}
         openUpward
-        iconColor={theme.colors.text.primaryInverse}
+        iconColor={theme.colors.text.slightlyMuted}
         noAlertsBackground="transparent"
       />
+      <Divider />
       <ActionMenu
         showShareDirectory={
           status.canShareDirectory && !status.isSharingDirectory
@@ -75,18 +79,27 @@ export function DesktopSessionControls({
         onCtrlAltDel={status.onCtrlAltDel}
         onDisconnect={status.onDisconnect}
         openUpward
-        buttonIconColor="text.primaryInverse"
+        buttonIconColor="text.slightlyMuted"
       />
-    </Pill>
+    </Inset>
   );
 }
 
-const Pill = styled(Flex)`
-  background: ${({ theme }) => theme.colors.interactive.solid.primary.default};
-  border-radius: ${({ theme }) => theme.radii[2]}px;
-  padding: 0 ${({ theme }) => theme.space[2]}px;
-  height: 100%;
-  position: relative;
+// TODO: fix up box shadow for dark themes
+const Inset = styled(Flex)`
+  background: ${({ theme }) => theme.colors.levels.sunken};
+  border: 1px solid ${({ theme }) => theme.colors.interactive.tonal.neutral[1]};
+  box-shadow: inset 0px 2px 1px -1px rgba(0, 0, 0, 0.2), inset 0px 1px 1px rgba(0, 0, 0, 0.14), inset 0px 1px 3px rgba(0, 0, 0, 0.12);
+  border-radius: ${({ theme }) => theme.radii[3]}px;
+  height: 32px;
+  margin: 4px auto;
+  gap: 2px;
+`;
+
+const Divider = styled.div`
+  width: 1px;
+  height: 20px;
+  background: ${({ theme }) => theme.colors.interactive.tonal.neutral[1]};
 `;
 
 function directorySharingTooltip(

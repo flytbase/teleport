@@ -51,6 +51,7 @@ export function StatusBar(props: {
     <Flex
       width="100%"
       height={`${statusBarHeight}px`}
+      background={theme.colors.levels.surface}
       css={`
         border-top: 1px solid ${props => props.theme.colors.spotBackground[1]};
       `}

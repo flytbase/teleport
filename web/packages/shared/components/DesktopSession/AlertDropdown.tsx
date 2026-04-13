@@ -32,7 +32,7 @@ export function AlertDropdown({
   alerts,
   onRemoveAlert,
   openUpward,
-  iconColor,
+  iconColor, // TODO: see if we can remove these two fields
   noAlertsBackground,
 }: Props) {
   const [showDropdown, setShowDropdown] = useState(false);
@@ -56,6 +56,9 @@ export function AlertDropdown({
       }
     });
   });
+
+  // TODO: fix icon color below: probably want black for both themes
+  // in the case where we have > 0 alerts
 
   return (
     <>
