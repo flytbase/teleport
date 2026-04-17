@@ -280,6 +280,8 @@ func (e *EventsService) NewWatcher(ctx context.Context, watch types.Watch) (type
 			parser = newScopedTokenParser()
 		case types.KindWorkloadCluster:
 			parser = newWorkloadClusterParser()
+		case types.KindCertAuthorityOverride:
+			parser = newCertAuthorityOverrideParser()
 		default:
 			if watch.AllowPartialSuccess {
 				continue

@@ -435,6 +435,9 @@ type InitConfig struct {
 	// WorkloadClusterService is the service that manages WorkloadClusters.
 	WorkloadClusterService services.WorkloadClusterService
 
+	// SubCAService manages CertAuthorityOverride resources.
+	SubCAService services.SubCAService
+
 	// FakePasswordHash is the password hash given to all users without a password.
 	// This helps eliminate timing attacks by ensuring that all authentication attempts
 	// with a password do a bcrypt comparison.

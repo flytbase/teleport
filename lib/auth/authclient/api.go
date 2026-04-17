@@ -1480,6 +1480,9 @@ type Cache interface {
 
 	// WorkloadClusterServiceGetter defines methods for fetching workload clusters.
 	services.WorkloadClusterServiceGetter
+
+	// SubCAServiceGetter reads CertAuthorityOverride resources.
+	services.SubCAServiceGetter
 }
 
 type NodeWrapper struct {
