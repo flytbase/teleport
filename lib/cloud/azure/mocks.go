@@ -493,6 +493,8 @@ type ARMComputeMock struct {
 	GetResult         armcompute.VirtualMachine
 	GetErr            error
 	RequireStatusOnly bool
+	StatusOnlyErr     error
+	LastGetOptions    *armcompute.VirtualMachinesClientGetOptions
 }
 
 func (m *ARMComputeMock) NewListPager(resourceGroup string, _ *armcompute.VirtualMachinesClientListOptions) *runtime.Pager[armcompute.VirtualMachinesClientListResponse] {
@@ -529,6 +531,9 @@ func (m *ARMComputeMock) NewListAllPager(opts *armcompute.VirtualMachinesClientL
 					return armcompute.VirtualMachinesClientListAllResponse{}, trace.BadParameter("StatusOnly=true required")
 				}
 			}
+			if opts != nil && opts.StatusOnly != nil && *opts.StatusOnly == "true" && m.StatusOnlyErr != nil {
+				return armcompute.VirtualMachinesClientListAllResponse{}, m.StatusOnlyErr
+			}
 			return armcompute.VirtualMachinesClientListAllResponse{
 				VirtualMachineListResult: armcompute.VirtualMachineListResult{
 					Value: vms,
@@ -538,7 +543,8 @@ func (m *ARMComputeMock) NewListAllPager(opts *armcompute.VirtualMachinesClientL
 	})
 }
 
-func (m *ARMComputeMock) Get(_ context.Context, _ string, _ string, _ *armcompute.VirtualMachinesClientGetOptions) (armcompute.VirtualMachinesClientGetResponse, error) {
+func (m *ARMComputeMock) Get(_ context.Context, _ string, _ string, options *armcompute.VirtualMachinesClientGetOptions) (armcompute.VirtualMachinesClientGetResponse, error) {
+	m.LastGetOptions = options
 	return armcompute.VirtualMachinesClientGetResponse{
 		VirtualMachine: m.GetResult,
 	}, m.GetErr

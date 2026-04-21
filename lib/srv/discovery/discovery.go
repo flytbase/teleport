@@ -1494,9 +1494,6 @@ func (s *Server) startAzureServerDiscovery() {
 
 	// a full refresh is somewhat wasteful, however not overly so due to inexpensive operations involved.
 	// a more selective approach would necessitate deeper refactoring.
-	//
-	// We rebuild fetchers from static + dynamic matcher sets each cycle, then call ShareAzureVMPowerStates
-	// over the combined set to deduplicate subscription-wide ListAll(StatusOnly) calls across discovery-config boundaries.
 	fullRefresh := func() {
 		s.Log.DebugContext(s.ctx, "Refreshing Azure server fetchers")
 		replaceMap := make(map[string][]server.Fetcher[*server.AzureInstances])
@@ -1515,14 +1512,6 @@ func (s *Server) startAzureServerDiscovery() {
 			replaceMap[configName] = s.azureServerFetchersFromMatchers(matchers, configName)
 		}
 
-		// Deduplicate wildcard VM power-state lookups across all discovery configs for this poll cycle.
-		// This must happen after all fetchers are built and before ReplaceFetchers makes them live.
-		allFetchers := make([]server.Fetcher[*server.AzureInstances], 0)
-		for _, fetchers := range replaceMap {
-			allFetchers = append(allFetchers, fetchers...)
-		}
-		server.ShareAzureVMPowerStates(s.ctx, s.Log, allFetchers)
-
 		azureWatcher.ReplaceFetchers(replaceMap)
 	}
 
@@ -1535,46 +1524,6 @@ func (s *Server) startAzureServerDiscovery() {
 		server.WithPreFetchHookFn(func(fetchers []server.Fetcher[*server.AzureInstances]) {
 			s.Log.InfoContext(s.ctx, "Azure VM discovery iteration starting")
 			runStart = s.clock.Now()
-
-			var totalFetchers int
-			type wildcardKey struct {
-				integration  string
-				subscription string
-			}
-
-			var wildcardFetchers int
-			wildcardCounts := make(map[wildcardKey]int)
-			for _, fetcher := range fetchers {
-				totalFetchers++
-				azureFetcher, ok := fetcher.(server.AzureDiscoveryFetcher)
-				if !ok {
-					continue
-				}
-				if azureFetcher.GetResourceGroup() != types.Wildcard {
-					continue
-				}
-				wildcardFetchers++
-				k := wildcardKey{
-					integration:  azureFetcher.IntegrationName(),
-					subscription: azureFetcher.GetSubscription(),
-				}
-				wildcardCounts[k]++
-			}
-
-			duplicateWildcardKeys := 0
-			for _, count := range wildcardCounts {
-				if count > 1 {
-					duplicateWildcardKeys++
-				}
-			}
-
-			s.Log.DebugContext(s.ctx,
-				"Azure VM discovery fetcher summary",
-				"fetchers_total", totalFetchers,
-				"fetchers_wildcard", wildcardFetchers,
-				"wildcard_subscription_keys", len(wildcardCounts),
-				"wildcard_duplicate_keys", duplicateWildcardKeys,
-			)
 
 			if len(fetchers) > 0 {
 				s.submitFetchEvent(types.CloudAzure, types.AzureMatcherVM)

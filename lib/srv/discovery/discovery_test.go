@@ -3153,7 +3153,8 @@ func (m *mockAzureRunCommandClient) getInstalled() []string {
 }
 
 type mockAzureClient struct {
-	vms []*armcompute.VirtualMachine
+	vms      []*armcompute.VirtualMachine
+	statuses map[string]azure.PowerState
 }
 
 func (m *mockAzureClient) Get(_ context.Context, _ string) (*azure.VirtualMachine, error) {
@@ -3168,7 +3169,10 @@ func (m *mockAzureClient) ListVirtualMachines(_ context.Context, _ string) ([]*a
 	return m.vms, nil
 }
 
-func (m *mockAzureClient) ListVirtualMachineStatuses(_ context.Context, _ string) (map[string]azure.PowerState, error) {
+func (m *mockAzureClient) ListVirtualMachineStatuses(_ context.Context) (map[string]azure.PowerState, error) {
+	if m.statuses != nil {
+		return maps.Clone(m.statuses), nil
+	}
 	// Key by vm.ID (the full ARM resource ID), matching the production lookup key in azure_watcher.go.
 	states := make(map[string]azure.PowerState)
 	for _, vm := range m.vms {
@@ -3179,11 +3183,34 @@ func (m *mockAzureClient) ListVirtualMachineStatuses(_ context.Context, _ string
 	return states, nil
 }
 
-func (m *mockAzureClient) GetVMPowerState(_ context.Context, _, _ string) (azure.PowerStateResult, error) {
-	return azure.PowerStateResult{
-		State: azure.PowerStateRunning,
-		Found: true,
-	}, nil
+func (m *mockAzureClient) GetVMPowerState(_ context.Context, resourceGroup, vmName string) (azure.PowerState, error) {
+	for _, vm := range m.vms {
+		if vm == nil || azure.StringVal(vm.Name) != vmName {
+			continue
+		}
+
+		resourceID := azure.StringVal(vm.ID)
+		if resourceID != "" {
+			parsedID, err := arm.ParseResourceID(resourceID)
+			if err == nil && parsedID.ResourceGroupName != resourceGroup {
+				continue
+			}
+		}
+
+		if state, ok := m.statuses[resourceID]; ok {
+			return state, nil
+		}
+		if vm.Properties != nil && vm.Properties.InstanceView != nil {
+			state := azure.ParsePowerState(vm.Properties.InstanceView.Statuses)
+			if state != azure.PowerStateUnknown {
+				return state, nil
+			}
+		}
+
+		return azure.PowerStateRunning, nil
+	}
+
+	return azure.PowerStateUnknown, trace.NotFound("vm %q in resource group %q not found", vmName, resourceGroup)
 }
 
 func TestAzureVMDiscovery(t *testing.T) {
@@ -3292,6 +3319,46 @@ func TestAzureVMDiscovery(t *testing.T) {
 		}
 	}
 
+	mixedFleetAzureVMs := func() ([]*armcompute.VirtualMachine, map[string]azure.PowerState) {
+		mkVM := func(name string, osType *armcompute.OperatingSystemTypes) *armcompute.VirtualMachine {
+			resourceID := fmt.Sprintf(
+				"/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Compute/virtualMachines/%s",
+				"testsub", "rg", name,
+			)
+			vm := &armcompute.VirtualMachine{
+				ID:       aws.String(resourceID),
+				Name:     aws.String(name),
+				Location: aws.String("westcentralus"),
+				Tags: map[string]*string{
+					"teleport": aws.String("yes"),
+				},
+				Properties: &armcompute.VirtualMachineProperties{
+					VMID: aws.String("vmid-" + name),
+				},
+			}
+			if osType != nil {
+				vm.Properties.StorageProfile = &armcompute.StorageProfile{
+					OSDisk: &armcompute.OSDisk{OSType: osType},
+				}
+			}
+			return vm
+		}
+
+		runningLinux := mkVM("fleet-running-linux", to.Ptr(armcompute.OperatingSystemTypesLinux))
+		deallocatedLinux := mkVM("fleet-deallocated-linux", to.Ptr(armcompute.OperatingSystemTypesLinux))
+		stoppedLinux := mkVM("fleet-stopped-linux", to.Ptr(armcompute.OperatingSystemTypesLinux))
+		runningWindows := mkVM("fleet-running-windows", to.Ptr(armcompute.OperatingSystemTypesWindows))
+
+		vms := []*armcompute.VirtualMachine{runningLinux, deallocatedLinux, stoppedLinux, runningWindows}
+		statuses := map[string]azure.PowerState{
+			aws.ToString(runningLinux.ID):     azure.PowerStateRunning,
+			aws.ToString(deallocatedLinux.ID): azure.PowerStateDeallocated,
+			aws.ToString(stoppedLinux.ID):     azure.PowerStateStopped,
+			aws.ToString(runningWindows.ID):   azure.PowerStateRunning,
+		}
+		return vms, statuses
+	}
+
 	presentNode := &types.ServerV2{
 		Kind: types.KindNode,
 		Metadata: types.Metadata{
@@ -3321,6 +3388,8 @@ func TestAzureVMDiscovery(t *testing.T) {
 		presentVMs               []types.Server
 		discoveryConfig          *discoveryconfig.DiscoveryConfig
 		staticMatchers           Matchers
+		foundVMs                 []*armcompute.VirtualMachine
+		statusByID               map[string]azure.PowerState
 		wantInstalledInstances   []string
 		expectedIntegrationNames []string
 		runError                 error
@@ -3350,6 +3419,28 @@ func TestAzureVMDiscovery(t *testing.T) {
 			discoveryConfig:        defaultDiscoveryConfig(),
 			staticMatchers:         Matchers{},
 			wantInstalledInstances: []string{"testvm", "testvm-integration"},
+		},
+		{
+			name:       "mixed fleet wildcard matcher only installs running Linux",
+			presentVMs: []types.Server{},
+			staticMatchers: Matchers{Azure: []types.AzureMatcher{{
+				Types:          []string{"vm"},
+				Subscriptions:  []string{"testsub"},
+				ResourceGroups: []string{types.Wildcard},
+				Regions:        []string{"westcentralus"},
+				ResourceTags:   types.Labels{"teleport": {"yes"}},
+				Params:         &types.InstallerParams{},
+				Integration:    noIntegration,
+			}}},
+			foundVMs: func() []*armcompute.VirtualMachine {
+				vms, _ := mixedFleetAzureVMs()
+				return vms
+			}(),
+			statusByID: func() map[string]azure.PowerState {
+				_, statuses := mixedFleetAzureVMs()
+				return statuses
+			}(),
+			wantInstalledInstances: []string{"fleet-running-linux"},
 		},
 		{
 			name:                   "installation failure creates user task",
@@ -3422,10 +3513,16 @@ func TestAzureVMDiscovery(t *testing.T) {
 				runErr: tc.runError,
 			}
 
+			foundVMs := tc.foundVMs
+			if foundVMs == nil {
+				foundVMs = foundAzureVMs()
+			}
+
 			initAzureClients := func(opts ...azure.ClientsOption) (azure.Clients, error) {
 				return &azuretest.Clients{
 					AzureVirtualMachines: &mockAzureClient{
-						vms: foundAzureVMs(),
+						vms:      foundVMs,
+						statuses: tc.statusByID,
 					},
 					AzureRunCommand: runClient,
 				}, nil
