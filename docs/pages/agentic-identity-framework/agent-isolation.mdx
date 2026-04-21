@@ -3,10 +3,24 @@ title: AI Agent Isolation
 description: Provides architectural principles for isolating agentc workloads in order to manage agentic identity.
 ---
 
-TODO: Explain how running AI workloads is a key part of AI infrastructure
+The Teleport Agentic Identity framework introduces a multi-layered approach to
+securely running agentic workloads. In this approach, security is built into the
+system. Meaning AI agents have a limited range of operations they are allowed to
+complete, with each operation subject to auditing and access controls. 
 
-TODO: explain how building security into AI, rather than bolting it on, requires
-multiple, connected layers: sandboxing, identity, access controls, and audit
+The layers are:
+
+- **Sandboxing:** Untrusted code is isolated and ephemeral, so there is minimal
+  risk that it will interface with systems it is not supposed to.
+- **Identity:** Each component of the system, including the end user, the
+  agent's execution environment, and the agentic workload to execute, can
+  prove itself to the system as a known, trusted subject.
+- **Access controls:** Encoded in the identity is a list of operations and
+  resources that the identity has access to, and the system checks access before
+  allowing any operation to take place.
+- **Audit:** Access controls associate each operation with an identity, allowing
+  the system to construct logs of which identities performed which operations at
+  different times.
 
 ## Sandboxing
 
