@@ -17,6 +17,7 @@
  */
 
 import * as Icons from 'design/Icon';
+import { borderRadius } from 'design/system';
 import { MenuIcon, MenuItem, MenuItemIcon } from 'shared/components/MenuAction';
 
 export default function ActionMenu(props: Props) {
@@ -33,7 +34,7 @@ export default function ActionMenu(props: Props) {
     <MenuIcon
       buttonIconProps={{
         color: buttonIconColor,
-        style: { fontSize: '20px' },
+        style: { fontSize: '20px', borderRadius: '8px' },
         title: 'More actions',
       }}
       menuProps={openUpward ? upwardMenuProps : menuProps}
