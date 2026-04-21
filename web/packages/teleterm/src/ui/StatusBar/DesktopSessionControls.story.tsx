@@ -17,9 +17,9 @@
  */
 
 import { DesktopSessionControlsRenderProps } from 'shared/components/DesktopSession/DesktopSession';
+import { ToastNotificationItem } from 'shared/components/ToastNotification/types';
 
 import { DesktopSessionControls } from './DesktopSessionControls';
-import { ToastNotificationItem } from 'shared/components/ToastNotification/types';
 
 export default {
   title: 'Teleterm/StatusBar/DesktopSessionControls',
@@ -33,10 +33,10 @@ const status: DesktopSessionControlsRenderProps = {
   isSharingDirectory: false,
   isSharingClipboard: false,
   clipboardSharingMessage: 'Clipboard sharing inactive.',
-  onShareDirectory: () => { },
-  onCtrlAltDel: () => { },
-  onDisconnect: () => { },
-  onRemoveAlert: () => { },
+  onShareDirectory: () => {},
+  onCtrlAltDel: () => {},
+  onDisconnect: () => {},
+  onRemoveAlert: () => {},
   alerts: [],
   isConnected: false,
   latencyStats: undefined,
@@ -48,7 +48,11 @@ export function NoAlerts() {
 
 export function WithAlert() {
   const alerts = [
-    { severity: 'warn', content: 'This is a warning message.', id: 'warning-1' }
+    {
+      severity: 'warn',
+      content: 'This is a warning message.',
+      id: 'warning-1',
+    },
   ] as ToastNotificationItem[];
   const alertsStatus = { ...status, alerts };
   return <DesktopSessionControls status={alertsStatus} />;

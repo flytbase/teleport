@@ -18,8 +18,9 @@
 
 import styled, { useTheme } from 'styled-components';
 
-import { Flex } from 'design';
-import { Clipboard, FolderShared, Windows } from 'design/Icon';
+import { Box, Flex } from 'design';
+import { ResourceIcon } from 'design';
+import { Clipboard, FolderShared } from 'design/Icon';
 import { HoverTooltip } from 'design/Tooltip';
 import ActionMenu from 'shared/components/DesktopSession/ActionMenu';
 import { AlertDropdown } from 'shared/components/DesktopSession/AlertDropdown';
@@ -37,9 +38,10 @@ export function DesktopSessionControls({
     active ? theme.colors.text.main : theme.colors.text.muted;
 
   return (
-    <Inset alignItems="center" gap={0}>
-      {/* TODO: use icon from unified resources */}
-      <Windows size="large" color="#0078D4" mx={2} />
+    <Inset alignItems="center">
+      <Box mx={2}>
+        <ResourceIcon name="windows" size="large" />
+      </Box>
       {status.latencyStats && (
         <LatencyDiagnostic latency={status.latencyStats} />
       )}
@@ -85,11 +87,9 @@ export function DesktopSessionControls({
   );
 }
 
-// TODO: fix up box shadow for dark themes
 const Inset = styled(Flex)`
   background: ${({ theme }) => theme.colors.levels.sunken};
-  border: 1px solid ${({ theme }) => theme.colors.interactive.tonal.neutral[1]};
-  box-shadow: inset 0px 2px 1px -1px rgba(0, 0, 0, 0.2), inset 0px 1px 1px rgba(0, 0, 0, 0.14), inset 0px 1px 3px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 2px 1px -1px rgba(0, 0, 0, 0.20) inset, 0 1px 1px 0 rgba(0, 0, 0, 0.14) inset, 0 1px 3px 0 rgba(0, 0, 0, 0.12) inset;
   border-radius: ${({ theme }) => theme.radii[3]}px;
   height: 32px;
   margin: 4px auto;
