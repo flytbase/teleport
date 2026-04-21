@@ -49,6 +49,35 @@ func (c *mockClients) GetVirtualMachinesClient(ctx context.Context, subscription
 	return vmClient, nil
 }
 
+type countingVirtualMachinesClient struct {
+	vms              []*armcompute.VirtualMachine
+	statuses         map[string]azure.PowerState
+	statusesCalls    int
+	getPowerState    azure.PowerState
+	getPowerStateErr error
+}
+
+func (*countingVirtualMachinesClient) Get(context.Context, string) (*azure.VirtualMachine, error) {
+	return nil, nil
+}
+
+func (*countingVirtualMachinesClient) GetByVMID(context.Context, string) (*azure.VirtualMachine, error) {
+	return nil, nil
+}
+
+func (c *countingVirtualMachinesClient) ListVirtualMachines(context.Context, string) ([]*armcompute.VirtualMachine, error) {
+	return c.vms, nil
+}
+
+func (c *countingVirtualMachinesClient) ListVirtualMachineStatuses(context.Context) (map[string]azure.PowerState, error) {
+	c.statusesCalls++
+	return c.statuses, nil
+}
+
+func (c *countingVirtualMachinesClient) GetVMPowerState(context.Context, string, string) (azure.PowerState, error) {
+	return c.getPowerState, c.getPowerStateErr
+}
+
 func TestAzureWatcher(t *testing.T) {
 	t.Parallel()
 
@@ -742,6 +771,50 @@ func TestAzureWatcher_PowerStateFiltering(t *testing.T) {
 		require.ElementsMatch(t, []string{"vm-running", "vm-starting", "vm-deallocated", "vm-stopped"}, vmNames,
 			"specific resource-group fetchers should skip power-state filtering")
 	})
+}
+
+func TestAzureWatcher_SkipBulkStatusFetchWhenNoCandidates(t *testing.T) {
+	t.Parallel()
+
+	const sub = "00000000-0000-0000-0000-000000000000"
+
+	client := &countingVirtualMachinesClient{
+		vms: []*armcompute.VirtualMachine{
+			{
+				ID:       to.Ptr(makeAzureVMID(sub, "rg1", "vm-prod")),
+				Name:     to.Ptr("vm-prod"),
+				Location: to.Ptr("eastus"),
+				Tags: map[string]*string{
+					"env": to.Ptr("prod"),
+				},
+				Properties: &armcompute.VirtualMachineProperties{
+					VMID: to.Ptr("vmid-prod"),
+				},
+			},
+		},
+	}
+
+	fetcher := newAzureInstanceFetcher(azureFetcherConfig{
+		Matcher: types.AzureMatcher{
+			Types:          []string{"vm"},
+			Subscriptions:  []string{sub},
+			ResourceGroups: []string{types.Wildcard},
+			Regions:        []string{types.Wildcard},
+			ResourceTags:   types.Labels{"teleport": []string{"yes"}},
+		},
+		Subscription:  sub,
+		ResourceGroup: types.Wildcard,
+		AzureClientGetter: func(context.Context, string) (azure.Clients, error) {
+			return &mockClients{vmClients: map[string]azure.VirtualMachinesClient{sub: client}}, nil
+		},
+		Logger: logtest.NewLogger(),
+	})
+
+	results, err := fetcher.GetInstances(t.Context(), false)
+	require.NoError(t, err)
+	require.Empty(t, results)
+	require.Zero(t, client.statusesCalls,
+		"wildcard fetchers should skip the bulk status scan when no VMs match local filters")
 }
 
 func TestAzureWatcher_FallbackLookupCap(t *testing.T) {

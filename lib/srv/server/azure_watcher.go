@@ -44,6 +44,7 @@ const maxPowerStateFallbackLookupsPerFetch = 10
 
 const (
 	powerFilterReasonNonWildcardResourceGroup = "non_wildcard_resource_group"
+	powerFilterReasonNoCandidates             = "no_candidates"
 	powerFilterReasonStatusFetchError         = "status_fetch_error"
 )
 
@@ -309,12 +310,16 @@ func (f *azureInstanceFetcher) GetInstances(ctx context.Context, _ bool) ([]*Azu
 	// Non-wildcard resource-group fetchers skip power-state filtering because
 	// Azure does not support StatusOnly for per-resource-group listings, and
 	// per-VM Get calls for the full set would create O(N) amplification each poll cycle.
+	// If no VMs remain after local filtering, power-state filtering is skipped.
 	// If the bulk status fetch fails, power-state filtering is skipped for this cycle.
 	var powerStates map[string]azure.PowerState
 	powerFilterReason := ""
-	if !allowAllResourceGroups {
+	switch {
+	case !allowAllResourceGroups:
 		powerFilterReason = powerFilterReasonNonWildcardResourceGroup
-	} else {
+	case candidateCount == 0:
+		powerFilterReason = powerFilterReasonNoCandidates
+	default:
 		powerStates, err = client.ListVirtualMachineStatuses(ctx)
 		if err != nil {
 			f.Logger.WarnContext(ctx,
