@@ -52,13 +52,12 @@ import {
 import { TdpError } from 'shared/libs/tdp/client';
 
 import { InputHandler } from './InputHandler';
-import {
+import useDesktopSession, {
   clipboardSharingMessage,
   directorySharingPossible,
   isSharingClipboard,
   isSharingDirectory,
 } from './useDesktopSession';
-import useDesktopSession from './useDesktopSession';
 
 export interface DesktopSessionProps {
   client: TdpClient;

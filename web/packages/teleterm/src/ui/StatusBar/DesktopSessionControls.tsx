@@ -18,8 +18,7 @@
 
 import styled, { useTheme } from 'styled-components';
 
-import { Box, Flex } from 'design';
-import { ResourceIcon } from 'design';
+import { Box, Flex, ResourceIcon } from 'design';
 import { Clipboard, FolderShared } from 'design/Icon';
 import { HoverTooltip } from 'design/Tooltip';
 import ActionMenu from 'shared/components/DesktopSession/ActionMenu';
@@ -89,7 +88,10 @@ export function DesktopSessionControls({
 
 const Inset = styled(Flex)`
   background: ${({ theme }) => theme.colors.levels.sunken};
-  box-shadow: 0 2px 1px -1px rgba(0, 0, 0, 0.20) inset, 0 1px 1px 0 rgba(0, 0, 0, 0.14) inset, 0 1px 3px 0 rgba(0, 0, 0, 0.12) inset;
+  box-shadow:
+    0 2px 1px -1px rgba(0, 0, 0, 0.2) inset,
+    0 1px 1px 0 rgba(0, 0, 0, 0.14) inset,
+    0 1px 3px 0 rgba(0, 0, 0, 0.12) inset;
   border-radius: ${({ theme }) => theme.radii[3]}px;
   height: 32px;
   margin: 4px auto;

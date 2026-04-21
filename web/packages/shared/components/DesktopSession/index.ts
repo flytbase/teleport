@@ -16,6 +16,5 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-export { DesktopSession } from './DesktopSession';
+export { DesktopSession, DisconnectedState } from './DesktopSession';
 export { DesktopSessionWithSharing } from './DesktopSessionWithSharing';
-export { DisconnectedState } from './DesktopSession';

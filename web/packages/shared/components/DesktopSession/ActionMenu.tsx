@@ -17,7 +17,6 @@
  */
 
 import * as Icons from 'design/Icon';
-import { borderRadius } from 'design/system';
 import { MenuIcon, MenuItem, MenuItemIcon } from 'shared/components/MenuAction';
 
 export default function ActionMenu(props: Props) {

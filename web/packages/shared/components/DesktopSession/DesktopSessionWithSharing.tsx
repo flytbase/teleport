@@ -21,8 +21,10 @@ import React from 'react';
 import { Attempt } from 'shared/hooks/useAsync';
 import { TdpClient } from 'shared/libs/tdp';
 
-import { DesktopSession } from './DesktopSession';
-import { DesktopSessionControlsRenderProps } from './DesktopSession';
+import {
+  DesktopSession,
+  DesktopSessionControlsRenderProps,
+} from './DesktopSession';
 import TopBar from './TopBar';
 
 export type DesktopSessionWithSharingProps = {
