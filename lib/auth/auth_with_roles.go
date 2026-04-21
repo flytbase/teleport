@@ -165,30 +165,31 @@ func (a *ServerWithRoles) authorizeAction(resource string, verb string, extraVer
 // even if they are not admins, e.g. update their own passwords,
 // or generate certificates, otherwise it will require admin privileges
 func (a *ServerWithRoles) currentUserAction(username string) error {
-	unscopedCtx := &a.context
-	if a.scopedContext != nil {
-		var isUnscoped bool
-		unscopedCtx, isUnscoped = a.scopedContext.UnscopedContext()
-		if !isUnscoped {
-			return a.currentScopedUserAction(username)
-		}
-	}
-
-	if authz.IsCurrentUser(*unscopedCtx, username) {
+	if authz.IsCurrentUser(a.context, username) {
 		return nil
 	}
-	return unscopedCtx.Checker.CheckAccessToRule(&services.Context{User: a.getUser()},
+	return a.context.Checker.CheckAccessToRule(&services.Context{User: a.context.User},
 		apidefaults.Namespace, types.KindUser, types.VerbCreate)
 }
 
-// currentScopedUserAction is a special checker that allows certain actions for scoped users
-// even if they are not admins, e.g. update their own passwords, or generate certificates.
-// Otherwise it will reject because scoped users can not modify other users.
-func (a *ServerWithRoles) currentScopedUserAction(username string) error {
-	if authz.ScopedIsCurrentUser(a.scopedContext, username) {
+// scopedCurrentUserAction is the same as currentUserAction but it supports both scoped
+// and unscoped auth contexts.
+func (a *ServerWithRoles) scopedCurrentUserAction(username string) error {
+	if a.scopedContext == nil {
+		return trace.Wrap(a.currentUserAction(username))
+	}
+	scopedCtx, unscopedCtx, isScoped := a.resolveAuthContext()
+	if isScoped {
+		if authz.ScopedIsCurrentUser(scopedCtx, username) {
+			return nil
+		}
+		return trace.Wrap(services.ErrScopedIdentity, "checking create access for users")
+	}
+	if authz.IsCurrentUser(*unscopedCtx, username) {
 		return nil
 	}
-	return trace.Wrap(services.ErrScopedIdentity, "checking create access for users")
+	return unscopedCtx.Checker.CheckAccessToRule(&services.Context{User: unscopedCtx.User},
+		apidefaults.Namespace, types.KindUser, types.VerbCreate)
 }
 
 // authConnectorAction is a special checker that grants access to auth
@@ -3733,17 +3734,10 @@ func (a *ServerWithRoles) generateUserCerts(ctx context.Context, req proto.UserC
 		verifiedMFADeviceID = mfaData.Device.Id
 	}
 
-	// NOTE (eriktate): there shouldn't be any remaining cases where a.scopedContext is nil, but
-	// just in case we do all of that book keeping here.
-	unscopedCtx := &a.context
-	isUnscoped := true
-	if a.scopedContext != nil {
-		unscopedCtx, isUnscoped = a.scopedContext.UnscopedContext()
-	}
-
-	hasAdminRole := isUnscoped && authz.HasBuiltinRole(*unscopedCtx, string(types.RoleAdmin))
+	scopedCtx, unscopedCtx, isScoped := a.resolveAuthContext()
+	hasAdminRole := !isScoped && authz.HasBuiltinRole(*unscopedCtx, string(types.RoleAdmin))
 	// only unscoped identities can impersonate
-	canImpersonate := isUnscoped && (hasAdminRole || unscopedCtx.Checker.CanImpersonateSomeone())
+	canImpersonate := !isScoped && (hasAdminRole || unscopedCtx.Checker.CanImpersonateSomeone())
 
 	// this prevents clients who have no chance at getting a cert and impersonating anyone
 	// from enumerating local users and hitting database
@@ -3849,15 +3843,16 @@ func (a *ServerWithRoles) generateUserCerts(ctx context.Context, req proto.UserC
 			// scoped identities will use the cluster default session TTL since we can't know which scoped role
 			// will ultimately be used to permit access
 			sessionTTL := readOnlyAuthPref.GetDefaultSessionTTL().Duration()
-			if isUnscoped {
+			if !isScoped {
 				// If requested certificate is for a flow that does not involve writing the certificate to disk
 				// (e.g. tsh proxy of DB, Kube, App, and AWS App Access using credential process)
 				// it is limited by max session ttl or mfa_verification_interval or req.Expires.
 
-			// Calculate the expiration time.
-			roleSet, err := services.FetchRolesForUser(user, a)
-			if err != nil {
-				return nil, trace.Wrap(err)
+				// Calculate the expiration time.
+				roleSet, err := services.FetchRolesForUser(user, a)
+				if err != nil {
+					return nil, trace.Wrap(err)
+				}
 				// [roleSet.AdjustMFAVerificationInterval] will reduce the adjusted sessionTTL if any of the roles requires
 				// MFA tap and `mfa_verification_interval` is set and lower than [roleSet.AdjustSessionTTL].
 				sessionTTL = roleSet.AdjustMFAVerificationInterval(
@@ -3915,14 +3910,14 @@ func (a *ServerWithRoles) generateUserCerts(ctx context.Context, req proto.UserC
 	checker := services.NewAccessCheckerWithRoleSet(accessInfo, clusterName.GetClusterName(), roleSet)
 
 	switch {
-	case isUnscoped && authz.HasBuiltinRole(*unscopedCtx, string(types.RoleAdmin)):
+	case !isScoped && authz.HasBuiltinRole(*unscopedCtx, string(types.RoleAdmin)):
 		// builtin admins can impersonate anyone
 		// this is required for local tctl commands to work
 	case req.Username == a.getUser().GetName():
 		// users can impersonate themselves, but role impersonation requests
 		// must be checked.
 		if isRoleImpersonation(req) {
-			if !isUnscoped {
+			if isScoped {
 				return nil, trace.Wrap(services.ErrScopedIdentity, "impersonation not permitted")
 			}
 			// Note: CheckImpersonateRoles() checks against the _stored_
@@ -3955,7 +3950,7 @@ func (a *ServerWithRoles) generateUserCerts(ctx context.Context, req proto.UserC
 			}
 		}
 	default:
-		if !isUnscoped {
+		if isScoped {
 			return nil, trace.Wrap(services.ErrScopedIdentity, "impersonation not permitted")
 		}
 		// check if this user is allowed to impersonate other users
@@ -3992,7 +3987,7 @@ func (a *ServerWithRoles) generateUserCerts(ctx context.Context, req proto.UserC
 		if !a.authServer.modules.Features().GetEntitlement(entitlements.Policy).Enabled {
 			return nil, trace.AccessDenied("access graph requires a Teleport Policy license")
 		}
-		if !isUnscoped {
+		if isScoped {
 			return nil, trace.Wrap(services.ErrScopedIdentity, "access graph is not permitted")
 		}
 		user, err := types.NewUser(req.Username)
@@ -4013,7 +4008,7 @@ func (a *ServerWithRoles) generateUserCerts(ctx context.Context, req proto.UserC
 	var appSessionID string
 	var webSessionID string
 	if req.RouteToApp.Name != "" {
-		if !isUnscoped {
+		if isScoped {
 			return nil, trace.Wrap(services.ErrScopedIdentity, "creating app session")
 		}
 		// Create a new app session using the same cert request. The user certs
@@ -4081,10 +4076,10 @@ func (a *ServerWithRoles) generateUserCerts(ctx context.Context, req proto.UserC
 	}
 
 	var checkerCtx *services.ScopedAccessCheckerContext
-	if isUnscoped {
+	if !isScoped {
 		checkerCtx = services.NewScopedAccessCheckerContextFromUnscoped(checker)
 	} else {
-		checkerCtx = a.scopedContext.CheckerContext
+		checkerCtx = scopedCtx.CheckerContext
 	}
 	// Generate certificate, note that the roles TTL will be ignored because
 	// the request is coming from "tctl auth sign" itself.
@@ -4192,7 +4187,7 @@ func (a *ServerWithRoles) generateUserCerts(ctx context.Context, req proto.UserC
 
 		// We've established this is an internal cert renewal, so pass through
 		// the BotInternal flag if set.
-		if a.context.Identity.GetIdentity().BotInternal {
+		if a.getIdentity().BotInternal {
 			certReq.BotInternal = true
 		}
 	}

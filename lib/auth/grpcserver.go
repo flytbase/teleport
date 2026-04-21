@@ -722,7 +722,7 @@ func validateUserCertsRequest(srv *ServerWithRoles, req *authpb.UserCertsRequest
 	}
 
 	// Single-use certs require current user.
-	if err := srv.currentUserAction(req.Username); err != nil {
+	if err := srv.scopedCurrentUserAction(req.Username); err != nil {
 		return trace.Wrap(err)
 	}
 
