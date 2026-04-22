@@ -1469,7 +1469,7 @@ func (s *Server) enrollAzureVirtualMachines(log *slog.Logger, instances *server.
 			break
 		}
 		log.WarnContext(s.ctx, "Failed to install Teleport on a virtual machine",
-			"vm_id", azure.StringVal(failure.Instance.Properties.VMID),
+			"vm_id", azure.VMID(failure.Instance),
 			"resource_id", azure.StringVal(failure.Instance.ID),
 			"install_error", failure.Error,
 		)
@@ -1614,25 +1614,6 @@ func (s *Server) installAzureServers(instances *server.AzureInstances, vmTasks *
 	needInstall := len(instances.Instances)
 	results[statusEnrolled] = allFound - needInstall
 
-	// Filter out VMs with non-Linux OS.
-	filtered := azure.FilterLinuxVMs(instances.Instances)
-	if len(filtered.Skipped) > 0 {
-		log.InfoContext(s.ctx,
-			"Skipping Azure VMs with non-Linux OS type",
-			"skipped", len(filtered.Skipped),
-			"kept", len(filtered.Linux),
-		)
-		for _, skipped := range filtered.Skipped {
-			log.DebugContext(s.ctx,
-				"Skipping Azure VM with non-Linux OS type",
-				"vm_name", azure.StringVal(skipped.VM.Name),
-				"resource_id", azure.StringVal(skipped.VM.ID),
-				"os_type", skipped.OSType,
-			)
-		}
-	}
-	instances.Instances = filtered.Linux
-
 	if len(instances.Instances) == 0 {
 		log.DebugContext(s.ctx, "No Azure instances remain to enroll, skipping installation")
 		return
@@ -1657,7 +1638,7 @@ func (s *Server) installAzureServers(instances *server.AzureInstances, vmTasks *
 				region:         instances.Region,
 			},
 			&usertasksv1.DiscoverAzureVMInstance{
-				VmId:            azure.StringVal(vm.Properties.VMID),
+				VmId:            azure.VMID(vm),
 				ResourceId:      azure.StringVal(vm.ID),
 				Name:            azure.StringVal(vm.Name),
 				DiscoveryConfig: instances.DiscoveryConfigName,

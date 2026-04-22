@@ -3169,7 +3169,7 @@ func (m *mockAzureClient) ListVirtualMachines(_ context.Context, _ string) ([]*a
 	return m.vms, nil
 }
 
-func (m *mockAzureClient) ListVirtualMachineStatuses(_ context.Context) (map[string]azure.PowerState, error) {
+func (m *mockAzureClient) ListVirtualMachineStates(_ context.Context) (map[string]azure.PowerState, error) {
 	if m.statuses != nil {
 		return maps.Clone(m.statuses), nil
 	}
@@ -3267,11 +3267,7 @@ func TestAzureVMDiscovery(t *testing.T) {
 	foundAzureVMs := func() []*armcompute.VirtualMachine {
 		return []*armcompute.VirtualMachine{
 			{
-				ID: aws.String((&arm.ResourceID{
-					SubscriptionID:    "testsub",
-					ResourceGroupName: "rg",
-					Name:              "testvm",
-				}).String()),
+				ID:       aws.String("/subscriptions/testsub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/testvm"),
 				Name:     aws.String("testvm"),
 				Location: aws.String("westcentralus"),
 				Tags: map[string]*string{
@@ -3282,11 +3278,7 @@ func TestAzureVMDiscovery(t *testing.T) {
 				},
 			},
 			{
-				ID: aws.String((&arm.ResourceID{
-					SubscriptionID:    "testsub",
-					ResourceGroupName: "rg",
-					Name:              "testvm-integration",
-				}).String()),
+				ID:       aws.String("/subscriptions/testsub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/testvm-integration"),
 				Name:     aws.String("testvm-integration"),
 				Location: aws.String("westcentralus"),
 				Tags: map[string]*string{
@@ -3297,11 +3289,7 @@ func TestAzureVMDiscovery(t *testing.T) {
 				},
 			},
 			{
-				ID: aws.String((&arm.ResourceID{
-					SubscriptionID:    "testsub",
-					ResourceGroupName: "rg",
-					Name:              "testvm-windows",
-				}).String()),
+				ID:       aws.String("/subscriptions/testsub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/testvm-windows"),
 				Name:     aws.String("testvm-windows"),
 				Location: aws.String("westcentralus"),
 				Tags: map[string]*string{
@@ -3471,6 +3459,7 @@ func TestAzureVMDiscovery(t *testing.T) {
 							Instances: map[string]*usertasksv1.DiscoverAzureVMInstance{
 								"test-vmid-integration": {
 									VmId:            "test-vmid-integration",
+									ResourceId:      "/subscriptions/testsub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/testvm-integration",
 									Name:            "testvm-integration",
 									DiscoveryConfig: defaultDiscoveryConfig().GetName(),
 									DiscoveryGroup:  defaultDiscoveryGroup,
@@ -3596,7 +3585,9 @@ func TestAzureVMDiscovery(t *testing.T) {
 				} else {
 					require.Equal(t, tc.wantInstalledInstances, runClient.getInstalled())
 				}
-				expectedEvents := 1
+				// One ResourceCreateEvent per successfully-installed VM. (The previous hardcoded `1` happened to work only because
+				// the old test fixture produced empty VM IDs, which made MakeEvents dedupe all instances into a single event.)
+				expectedEvents := len(tc.wantInstalledInstances)
 				if tc.runError != nil {
 					expectedEvents = 0
 				}

@@ -160,6 +160,15 @@ func vmOSType(vm *armcompute.VirtualMachine) string {
 	return string(*vm.Properties.StorageProfile.OSDisk.OSType)
 }
 
+// VMID nil-safely extracts the VM ID (Properties.VMID) from a VM.
+// Returns empty string if any pointer in the chain is nil.
+func VMID(vm *armcompute.VirtualMachine) string {
+	if vm == nil || vm.Properties == nil || vm.Properties.VMID == nil {
+		return ""
+	}
+	return *vm.Properties.VMID
+}
+
 // VirtualMachinesClient is a client for Azure virtual machines.
 type VirtualMachinesClient interface {
 	// Get returns the virtual machine (including scale set VMs) for the given
@@ -169,10 +178,10 @@ type VirtualMachinesClient interface {
 	GetByVMID(ctx context.Context, vmID string) (*VirtualMachine, error)
 	// ListVirtualMachines gets all of the virtual machines in the given resource group.
 	ListVirtualMachines(ctx context.Context, resourceGroup string) ([]*armcompute.VirtualMachine, error)
-	// ListVirtualMachineStatuses returns known VM power states keyed by resource ID (vm.ID).
+	// ListVirtualMachineStates returns known VM power states keyed by resource ID (vm.ID).
 	// Uses StatusOnly=true on a subscription-wide ListAll and omits VMs whose power state
 	// cannot be determined from the bulk response.
-	ListVirtualMachineStatuses(ctx context.Context) (map[string]PowerState, error)
+	ListVirtualMachineStates(ctx context.Context) (map[string]PowerState, error)
 	// GetVMPowerState returns the power state for a single VM using Get with $expand=instanceView.
 	// Returns an error if the response has no InstanceView or no PowerState status.
 	GetVMPowerState(ctx context.Context, resourceGroup, vmName string) (PowerState, error)
@@ -395,10 +404,10 @@ func (c *vmClient) ListVirtualMachines(ctx context.Context, resourceGroup string
 	return virtualMachines, nil
 }
 
-// ListVirtualMachineStatuses returns known VM power states keyed by resource ID (vm.ID).
+// ListVirtualMachineStates returns known VM power states keyed by resource ID (vm.ID).
 // Uses StatusOnly=true on a subscription-wide ListAll and omits VMs whose power state
 // cannot be determined from the bulk response.
-func (c *vmClient) ListVirtualMachineStatuses(ctx context.Context) (map[string]PowerState, error) {
+func (c *vmClient) ListVirtualMachineStates(ctx context.Context) (map[string]PowerState, error) {
 	pager := newListAllPager(c.api.NewListAllPager(&armcompute.VirtualMachinesClientListAllOptions{
 		StatusOnly: to.Ptr("true"),
 	}))

@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
@@ -494,7 +495,10 @@ type ARMComputeMock struct {
 	GetErr            error
 	RequireStatusOnly bool
 	StatusOnlyErr     error
-	LastGetOptions    *armcompute.VirtualMachinesClientGetOptions
+	// LastGetOptions records the options passed to the most recent Get call.
+	// Atomic so tests can read the value without data-racing concurrent Get
+	// calls if a fetcher ever parallelizes.
+	LastGetOptions atomic.Pointer[armcompute.VirtualMachinesClientGetOptions]
 }
 
 func (m *ARMComputeMock) NewListPager(resourceGroup string, _ *armcompute.VirtualMachinesClientListOptions) *runtime.Pager[armcompute.VirtualMachinesClientListResponse] {
@@ -544,7 +548,7 @@ func (m *ARMComputeMock) NewListAllPager(opts *armcompute.VirtualMachinesClientL
 }
 
 func (m *ARMComputeMock) Get(_ context.Context, _ string, _ string, options *armcompute.VirtualMachinesClientGetOptions) (armcompute.VirtualMachinesClientGetResponse, error) {
-	m.LastGetOptions = options
+	m.LastGetOptions.Store(options)
 	return armcompute.VirtualMachinesClientGetResponse{
 		VirtualMachine: m.GetResult,
 	}, m.GetErr

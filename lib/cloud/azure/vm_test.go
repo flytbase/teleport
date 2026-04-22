@@ -576,7 +576,7 @@ func TestFilterLinuxVMs(t *testing.T) {
 	}
 }
 
-func TestListVirtualMachineStatuses(t *testing.T) {
+func TestListVirtualMachineStates(t *testing.T) {
 	t.Parallel()
 
 	mockAPI := &ARMComputeMock{
@@ -651,7 +651,7 @@ func TestListVirtualMachineStatuses(t *testing.T) {
 
 	client := NewVirtualMachinesClientByAPI(mockAPI, nil)
 
-	states, err := client.ListVirtualMachineStatuses(t.Context())
+	states, err := client.ListVirtualMachineStates(t.Context())
 	require.NoError(t, err)
 	// vm3 has nil InstanceView → excluded.
 	// vm4 has unrecognized "starting" → included as PowerStateOther.
@@ -752,9 +752,10 @@ func TestGetVMPowerState(t *testing.T) {
 			client := NewVirtualMachinesClientByAPI(tc.mockAPI, nil)
 
 			state, err := client.GetVMPowerState(t.Context(), "rg1", "vm1")
-			require.NotNil(t, tc.mockAPI.LastGetOptions)
-			require.NotNil(t, tc.mockAPI.LastGetOptions.Expand)
-			require.Equal(t, armcompute.InstanceViewTypesInstanceView, *tc.mockAPI.LastGetOptions.Expand)
+			lastOpts := tc.mockAPI.LastGetOptions.Load()
+			require.NotNil(t, lastOpts)
+			require.NotNil(t, lastOpts.Expand)
+			require.Equal(t, armcompute.InstanceViewTypesInstanceView, *lastOpts.Expand)
 			tc.assertError(t, err)
 			if tc.errorIs != nil {
 				require.ErrorIs(t, err, tc.errorIs)
