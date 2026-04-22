@@ -69,15 +69,19 @@ conceal themselves by running agentic workloads.
 
 ## Access controls
 
-- TODO: Why access controls are necessary
-- TODO: Every identity gets roles encoded in certificate (general principle)
-- TODO: user certificate allows the system to check RBAC for managing AI
-  workloads
-- TODO: Certificate for agent workload means that agents can check RBAC before
-  passing traffic on to target infra resources
-- TODO: Certificate for agent workload gets the same permissions as originating
-  user because of a Teleport-trusted workload (tbot) that continuously updates
-  certificates in the isolated environment
+In the secure agent environment, **access controls** take advantage of the
+identity layer to enable components that interact with the agentic workload to
+allow or deny operations. Because of the sandboxing layer, the agentic workload
+has no default ability to operate on other components. If an operation is to
+succeed, a component must explicitly allow it.
+
+If every component of the system already has an identity, the system can encode
+in each identity the permissions each component has to interact with other
+components. Since end users have identities as well, the system can check
+whether the end user has permissions to manage agentic workloads before running
+them in the secure environment. In addition, infrastructure components in the
+environment can check whether the agentic workload can operate on them before
+allowing those operations.
 
 ## Audit
 
@@ -103,4 +107,7 @@ conceal themselves by running agentic workloads.
 - TODO: the remote AI agent uses its certificate to connect to resources. 
 - TODO: A mechanism is in place to allow the agent to transparently connect to
   resources without being aware of its environment.
+- TODO: Certificate for agent workload gets the same permissions as originating
+  user because of a Teleport-trusted workload (tbot) that continuously updates
+  certificates in the isolated environment
 
