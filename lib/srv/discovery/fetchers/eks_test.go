@@ -402,4 +402,3 @@ func awsResponseError(status int, msg string) error {
 		},
 	}
 }
-
