@@ -25,9 +25,22 @@ The layers are:
 
 ## Sandboxing
 
-- TODO: Why sandboxing is necessary
-- TODO: hardware-level virtualization
-- TODO: untrusted code and its execution enviornment exist ephemerally
+The first layer of the secure agent environment is **sandboxing**. Agentic
+workloads are untrusted. Since agentic output is indeterministic, we must assume
+that any code an agent executes is arbitrary. As a result, the only truly secure
+way to protect a system against abuse by an agent is to isolate the agent from
+the system.
+
+There are two components to sandboxing. The first is hardware isolation. In the
+secure agent environment, we recommend hardware-level virtualization, e.g., a
+Type 1 hypervisor, for running agent workloads. The agent has no access to an
+operating system, so there is no attack surface on other software running in
+your environment.
+
+The second component is ephemerality. We recommend placing a time to live on
+the virtual machine that runs agentic workloads. This way, the untrusted code is
+isolated in time: it exists only as long as it is needed, and not long enough
+for unintended side effects to take hold.
 
 ## Identity
 
