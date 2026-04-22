@@ -445,11 +445,18 @@ func (f *azureInstanceFetcher) fetchPowerStates(
 		//
 		// AccessDenied gets a dedicated, actionable message so operators can
 		// tell a persistent misconfiguration apart from a transient ARM error.
-		msg := "Failed to fetch VM power states, skipping power state filter"
 		if trace.IsAccessDenied(err) {
-			msg = "Identity lacks permission to fetch VM power states, skipping power state filter — grant Reader on the subscription to enable filtering"
+			f.Logger.WarnContext(ctx,
+				"Identity lacks permission to fetch VM power states, skipping power state filter — grant Reader on the subscription to enable filtering",
+				"subscription_id", f.Subscription,
+				"resource_group", f.ResourceGroup,
+				"integration", f.Integration,
+				"error", err,
+			)
+			return nil, powerFilterReasonStatusFetchError
 		}
-		f.Logger.WarnContext(ctx, msg,
+		f.Logger.WarnContext(ctx,
+			"Failed to fetch VM power states, skipping power state filter",
 			"subscription_id", f.Subscription,
 			"resource_group", f.ResourceGroup,
 			"integration", f.Integration,
