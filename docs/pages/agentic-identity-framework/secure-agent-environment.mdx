@@ -52,20 +52,20 @@ The **identity** layer of the secure agent environment is consistent with
 Teleport's overall approach to infrastructure: every human and non-human
 component of the system receives an identity. That way, every component that
 interacts with it can perform authentication and authorization checks on the
-identity. For example, we recommend distributing identities to end users, the
-execution environment for the agentic workload, and the agentic workload itself,
-in addition to infrastructure components such as Kubernetes clusters, databases,
+identity. 
+
+For example, we recommend distributing identities to end users, the execution
+environment for the agentic workload, and the agentic workload itself, in
+addition to infrastructure components such as Kubernetes clusters, databases,
 and web applications.
 
 Once the agentic workload has an identity, other components can verify that
 identity. A database, for example, can verify that the agentic workload is a
 trusted part of the system and not a rogue actor.
 
-- TODO: the remote AI agent workload inherits the user's certificate and acts as
-  the user.
-- TODO: the remote AI agent uses its certificate to connect to resources. A
-  mechanism is in place to allow the agent to transparently connect to resources
-  without being aware of its environment.
+For agentic workloads, it is crucial that the system associate the workload with
+the human user that initiated it. There must be no way for human users to
+conceal themselves by running agentic workloads.
 
 ## Access controls
 
@@ -100,4 +100,7 @@ trusted part of the system and not a rogue actor.
   issued for the remote workload
 - TODO: central auth service issues certs
 - TODO: agents check certs against the CA
+- TODO: the remote AI agent uses its certificate to connect to resources. 
+- TODO: A mechanism is in place to allow the agent to transparently connect to
+  resources without being aware of its environment.
 
