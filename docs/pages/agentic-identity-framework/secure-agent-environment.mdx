@@ -31,6 +31,10 @@ that any code an agent executes is arbitrary. As a result, the only truly secure
 way to protect a system against abuse by an agent is to isolate the agent from
 the system.
 
+As the first layer, sandboxing ensures that the agentic workload has no effect
+on the surrounding system unless other parts of the system let it escape the
+sandbox.
+
 There are two components to sandboxing. The first is hardware isolation. In the
 secure agent environment, we recommend hardware-level virtualization, e.g., a
 Type 1 hypervisor, for running agent workloads. The agent has no access to an
@@ -44,12 +48,19 @@ for unintended side effects to take hold.
 
 ## Identity
 
-- TODO: Why identity is necessary
-- TODO: Every component gets an identity: user certificates, certificate for
-  tbot bot, SSH host cert for the beam, workload identity SVID, TLS user cert
-  issued for the remote workload
-- TODO: central auth service issues certs
-- TODO: agents check certs against the CA
+The **identity** layer of the secure agent environment is consistent with
+Teleport's overall approach to infrastructure: every human and non-human
+component of the system receives an identity. That way, every component that
+interacts with it can perform authentication and authorization checks on the
+identity. For example, we recommend distributing identities to end users, the
+execution environment for the agentic workload, and the agentic workload itself,
+in addition to infrastructure components such as Kubernetes clusters, databases,
+and web applications.
+
+Once the agentic workload has an identity, other components can verify that
+identity. A database, for example, can verify that the agentic workload is a
+trusted part of the system and not a rogue actor.
+
 - TODO: the remote AI agent workload inherits the user's certificate and acts as
   the user.
 - TODO: the remote AI agent uses its certificate to connect to resources. A
@@ -83,4 +94,10 @@ for unintended side effects to take hold.
 
 ## Reference implementation
 
-TODO: explain how Beams implements the principles spelled out above
+- TODO: explain how Beams implements the principles spelled out above
+- TODO: Every component gets an identity: user certificates, certificate for
+  tbot bot, SSH host cert for the beam, workload identity SVID, TLS user cert
+  issued for the remote workload
+- TODO: central auth service issues certs
+- TODO: agents check certs against the CA
+
