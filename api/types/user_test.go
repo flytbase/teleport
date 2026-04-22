@@ -418,3 +418,94 @@ func TestUserV2IsEqual(t *testing.T) {
 		})
 	}
 }
+
+// TestUserMatchSearch tests the SearchKeywords filter for users, which includes keys and values
+// for labels and traits.
+func TestUserMatchSearch(t *testing.T) {
+	u := newUser(t)
+
+	tests := []struct {
+		name           string
+		searchKeywords []string
+		want           bool
+	}{
+		{
+			name:           "match empty search",
+			searchKeywords: []string{""},
+			want:           true,
+		},
+		{
+			name:           "match by name",
+			searchKeywords: []string{"alice"},
+			want:           true,
+		},
+		{
+			name:           "match by label",
+			searchKeywords: []string{"env", "prod"},
+			want:           true,
+		},
+		{
+			name:           "match by role",
+			searchKeywords: []string{"admin", "dev"},
+			want:           true,
+		},
+		{
+			name:           "match by trait",
+			searchKeywords: []string{"logins", "root"},
+			want:           true,
+		},
+		{
+			name:           "match none",
+			searchKeywords: []string{"fake"},
+			want:           false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, u.MatchSearch(tt.searchKeywords))
+		})
+	}
+}
+
+func TestUserMatchTraits(t *testing.T) {
+	u := newUser(t)
+
+	tests := []struct {
+		name   string
+		traits map[string][]string
+		want   bool
+	}{
+		{
+			name:   "match nil",
+			traits: nil,
+			want:   true,
+		},
+		{
+			name:   "match empty",
+			traits: map[string][]string{},
+			want:   true,
+		},
+		{
+			name:   "match full",
+			traits: map[string][]string{"logins": {"root", "alice"}},
+			want:   true,
+		},
+		{
+			name:   "match subset",
+			traits: map[string][]string{"logins": {"alice"}},
+			want:   true,
+		},
+		{
+			name:   "match none",
+			traits: map[string][]string{"logins": {"nobody"}},
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, u.MatchTraits(tt.traits))
+		})
+	}
+}

@@ -44,6 +44,12 @@ func (f *UserFilter) Match(user *UserV2) bool {
 		}
 	}
 
+	if len(f.Traits) != 0 {
+		if !user.MatchTraits(f.Traits) {
+			return false
+		}
+	}
+
 	if f.SkipSystemUsers && IsSystemResource(user) {
 		return false
 	}
@@ -289,7 +295,27 @@ func (u *UserV2) SetStaticLabels(sl map[string]string) {
 func (u *UserV2) MatchSearch(values []string) bool {
 	fieldVals := append(utils.MapToStrings(u.Metadata.Labels), u.GetName())
 	fieldVals = append(fieldVals, u.GetRoles()...)
+	for key, values := range u.Spec.Traits {
+		fieldVals = append(fieldVals, key)
+		fieldVals = append(fieldVals, values...)
+	}
 	return MatchSearch(fieldVals, values, nil)
+}
+
+// MatchTraits takes a map of traits and returns `true` if the user's
+// traits contains all of them.
+func (u *UserV2) MatchTraits(traits map[string][]string) bool {
+	if u.Spec.Traits == nil {
+		return false
+	}
+
+	for key, values := range traits {
+		traitValues, ok := u.Spec.Traits[key]
+		if !ok || !utils.ContainsAll(traitValues, values) {
+			return false
+		}
+	}
+	return true
 }
 
 // SetMetadata sets object metadata
