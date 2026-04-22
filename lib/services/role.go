@@ -243,49 +243,25 @@ func ValidateRoleName(role types.Role) error {
 	return nil
 }
 
-type validateRoleOptions struct {
-	warningReporter func(error)
-}
-
-func defaultValidateRoleOptions() validateRoleOptions {
-	return validateRoleOptions{
-		warningReporter: func(error) {},
-	}
-}
-
-type validateRoleOption func(*validateRoleOptions)
-
-// withWarningReporter is meant for tests to assert the presence of expected
-// warnings.
-func withWarningReporter(f func(error)) validateRoleOption {
-	return func(opts *validateRoleOptions) {
-		opts.warningReporter = f
-	}
-}
-
-// ValidateRole parses, validates, and sets default values on a role.
-func ValidateRole(r types.Role, opts ...validateRoleOption) error {
-	options := defaultValidateRoleOptions()
-	for _, opt := range opts {
-		opt(&options)
-	}
-
+// ValidateRole checks and sets defaults for role fields and validates
+// expression syntax.
+//
+// This function should be called on the write path (role create/update)
+// and NOT on read paths to avoid bricking clusters with existing roles
+// that may not parse with newer parsers.
+func ValidateRole(r types.Role) error {
 	if err := CheckAndSetDefaults(r); err != nil {
 		return trace.Wrap(err)
 	}
 
-	// Expression parsers in new versions sometimes get smarter/more strict and
-	// catch more syntax or type errors that previously would only be caught
-	// when they were evaluated. To avoid any possibility of bricking a cluster
-	// by making all roles invalid due to a buggy expression that may not even
-	// be used, only log expression parse errors as a warning.
 	if err := validateRoleExpressions(r); err != nil {
-		options.warningReporter(err)
-		slog.WarnContext(context.Background(), "Detected invalid role", "role", r.GetName(), "error", err)
+		return trace.Wrap(err)
 	}
+
 	return nil
 }
 
+// validateRoleExpressions validates all expression and predicate syntax in a role.
 func validateRoleExpressions(r types.Role) error {
 	var errs []error
 	for _, condition := range []struct {
@@ -295,13 +271,14 @@ func validateRoleExpressions(r types.Role) error {
 		{"allow", types.Allow},
 		{"deny", types.Deny},
 	} {
+		// Rules
 		for _, rule := range r.GetRules(condition.condition) {
 			if err := validateRule(rule); err != nil {
-				err = trace.BadParameter("parsing %s rule: %v", condition.name, err)
-				errs = append(errs, err)
+				errs = append(errs, trace.BadParameter("parsing %s rule: %v", condition.name, err))
 			}
 		}
 
+		// Trait templates in string fields (logins, db_names, etc.)
 		for _, values := range []struct {
 			name   string
 			values []string
@@ -315,41 +292,34 @@ func validateRoleExpressions(r types.Role) error {
 			{"kubernetes_users", r.GetKubeUsers(condition.condition)},
 			{"db_names", r.GetDatabaseNames(condition.condition)},
 			{"db_users", r.GetDatabaseUsers(condition.condition)},
+			{"db_roles", r.GetDatabaseRoles(condition.condition)},
 			{"host_groups", r.GetHostGroups(condition.condition)},
 			{"host_sudoers", r.GetHostSudoers(condition.condition)},
 			{"desktop_groups", r.GetDesktopGroups(condition.condition)},
-			{"impersonate.users", r.GetImpersonateConditions(condition.condition).Users},
-			{"impersonate.roles", r.GetImpersonateConditions(condition.condition).Roles},
 		} {
 			for _, value := range values.values {
-				_, err := parse.NewTraitsTemplateExpression(value)
-				if err != nil {
-					err = trace.BadParameter("parsing %s.%s expression: %v", condition.name, values.name, err)
-					errs = append(errs, err)
+				if _, err := parse.NewTraitsTemplateExpression(value); err != nil {
+					errs = append(errs, trace.BadParameter("parsing %s.%s expression: %v", condition.name, values.name, err))
 				}
 			}
 		}
 
+		// Trait templates in kubernetes_resources
 		for _, ks := range r.GetKubeResources(condition.condition) {
-			_, err := parse.NewTraitsTemplateExpression(ks.Namespace)
-			if err != nil {
-				err = trace.BadParameter("parsing %s.kubernetes_resources.namespace expression: %v", condition.name, err)
-				errs = append(errs, err)
+			if _, err := parse.NewTraitsTemplateExpression(ks.Namespace); err != nil {
+				errs = append(errs, trace.BadParameter("parsing %s.kubernetes_resources.namespace expression: %v", condition.name, err))
 			}
-			_, err = parse.NewTraitsTemplateExpression(ks.Name)
-			if err != nil {
-				err = trace.BadParameter("parsing %s.kubernetes_resources.name expression: %v", condition.name, err)
-				errs = append(errs, err)
+			if _, err := parse.NewTraitsTemplateExpression(ks.Name); err != nil {
+				errs = append(errs, trace.BadParameter("parsing %s.kubernetes_resources.name expression: %v", condition.name, err))
 			}
 			for _, verb := range ks.Verbs {
-				_, err = parse.NewTraitsTemplateExpression(verb)
-				if err != nil {
-					err = trace.BadParameter("parsing %s.kubernetes_resources.verbs expression: %v", condition.name, err)
-					errs = append(errs, err)
+				if _, err := parse.NewTraitsTemplateExpression(verb); err != nil {
+					errs = append(errs, trace.BadParameter("parsing %s.kubernetes_resources.verbs expression: %v", condition.name, err))
 				}
 			}
 		}
 
+		// Label value trait templates and label expressions
 		for _, labels := range []struct {
 			name string
 			kind string
@@ -372,21 +342,60 @@ func validateRoleExpressions(r types.Role) error {
 			}
 			for _, labelValues := range labelMatchers.Labels {
 				for _, label := range labelValues {
-					_, err := parse.NewTraitsTemplateExpression(label)
-					if err != nil {
-						err = trace.BadParameter("parsing %s.%s template expression: %v", condition.name, labels.name, err)
-						errs = append(errs, err)
+					if _, err := parse.NewTraitsTemplateExpression(label); err != nil {
+						errs = append(errs, trace.BadParameter("parsing %s.%s template expression: %v", condition.name, labels.name, err))
 					}
 				}
 			}
 			if len(labelMatchers.Expression) > 0 {
 				if _, err := parseLabelExpression(labelMatchers.Expression); err != nil {
-					err = trace.BadParameter("parsing %s.%s_expression: %v", condition.name, labels.name, err)
-					errs = append(errs, err)
+					errs = append(errs, trace.BadParameter("parsing %s.%s_expression: %v", condition.name, labels.name, err))
 				}
 			}
 		}
 	}
+
+	// Session require policy expressions
+	for i, policy := range r.GetSessionRequirePolicies() {
+		if policy.Filter == "" {
+			continue
+		}
+		parser, err := NewWhereParser(&Context{})
+		if err != nil {
+			errs = append(errs, trace.BadParameter("require_session_join[%d]: failed to create where parser: %v", i, err))
+			continue
+		}
+		if _, err = parser.Parse(policy.Filter); err != nil {
+			errs = append(errs, trace.BadParameter("require_session_join[%d]: invalid filter %q: %v", i, policy.Filter, err))
+		}
+	}
+
+	// Impersonate conditions
+	ic := r.GetImpersonateConditions(types.Allow)
+	for _, value := range ic.Users {
+		if _, err := parse.NewTraitsTemplateExpression(value); err != nil {
+			errs = append(errs, trace.BadParameter("parsing allow.impersonate.users expression: %v", err))
+		}
+	}
+	for _, value := range ic.Roles {
+		if _, err := parse.NewTraitsTemplateExpression(value); err != nil {
+			errs = append(errs, trace.BadParameter("parsing allow.impersonate.roles expression: %v", err))
+		}
+	}
+	if ic.Where != "" {
+		parser, err := newImpersonateWhereParser(&impersonateContext{})
+		if err != nil {
+			errs = append(errs, trace.BadParameter("allow.impersonate.where: failed to create parser: %v", err))
+		} else if _, err = parser.Parse(ic.Where); err != nil {
+			errs = append(errs, trace.BadParameter("allow.impersonate.where: invalid expression %q: %v", ic.Where, err))
+		}
+	}
+
+	// Access predicates
+	if err := ValidateAccessPredicates(r); err != nil {
+		errs = append(errs, err)
+	}
+
 	return trace.NewAggregate(errs...)
 }
 
@@ -3822,7 +3831,7 @@ func UnmarshalRoleV6(bytes []byte, opts ...MarshalOption) (*types.RoleV6, error)
 		return nil, trace.BadParameter("inconsistent version in role data, got %q and %q", role.Version, version)
 	}
 
-	if err := ValidateRole(&role); err != nil {
+	if err := CheckAndSetDefaults(&role); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
@@ -3837,7 +3846,7 @@ func UnmarshalRoleV6(bytes []byte, opts ...MarshalOption) (*types.RoleV6, error)
 
 // MarshalRole marshals the Role resource to JSON.
 func MarshalRole(role types.Role, opts ...MarshalOption) ([]byte, error) {
-	if err := ValidateRole(role); err != nil {
+	if err := CheckAndSetDefaults(role); err != nil {
 		return nil, trace.Wrap(err)
 	}
 

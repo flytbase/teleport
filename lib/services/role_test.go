@@ -820,10 +820,10 @@ func TestValidateRole(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		spec           types.RoleSpecV6
-		expectError    error
-		expectWarnings []string
+		name                string
+		spec                types.RoleSpecV6
+		expectError         error
+		expectErrorContains []string
 	}{
 		{
 			name: "valid syntax",
@@ -840,7 +840,7 @@ func TestValidateRole(t *testing.T) {
 					Logins: []string{"{{foo"},
 				},
 			},
-			expectWarnings: []string{
+			expectErrorContains: []string{
 				"parsing allow.logins expression",
 				`"{{foo" is using template brackets '{{' or '}}', however expression does not parse`,
 			},
@@ -859,7 +859,7 @@ func TestValidateRole(t *testing.T) {
 					},
 				},
 			},
-			expectWarnings: []string{
+			expectErrorContains: []string{
 				"parsing allow rule",
 				"could not parse 'where' rule",
 				"unsupported function: containz",
@@ -878,7 +878,7 @@ func TestValidateRole(t *testing.T) {
 					},
 				},
 			},
-			expectWarnings: []string{
+			expectErrorContains: []string{
 				"parsing allow rule",
 				"could not parse 'where' rule",
 				"unsupported function: can_view",
@@ -913,7 +913,7 @@ func TestValidateRole(t *testing.T) {
 					},
 				},
 			},
-			expectWarnings: []string{
+			expectErrorContains: []string{
 				"parsing allow rule",
 				"could not parse action",
 				"unsupported function: zzz",
@@ -980,7 +980,7 @@ func TestValidateRole(t *testing.T) {
 					},
 				},
 			},
-			expectWarnings: []string{
+			expectErrorContains: []string{
 				"parsing allow.node_labels template expression",
 				"parsing allow.app_labels template expression",
 				"parsing allow.kubernetes_labels template expression",
@@ -1024,7 +1024,7 @@ func TestValidateRole(t *testing.T) {
 					BeamLabelsExpression:            `containz(labels["env"], "staging")`,
 				},
 			},
-			expectWarnings: []string{
+			expectErrorContains: []string{
 				"parsing allow.node_labels_expression",
 				"parsing allow.app_labels_expression",
 				"parsing allow.kubernetes_labels_expression",
@@ -1082,7 +1082,7 @@ func TestValidateRole(t *testing.T) {
 					},
 				},
 			},
-			expectWarnings: []string{
+			expectErrorContains: []string{
 				"parsing allow.logins expression",
 				"parsing allow.windows_desktop_logins expression",
 				"parsing allow.aws_role_arns expression",
@@ -1109,8 +1109,6 @@ func TestValidateRole(t *testing.T) {
 				"parsing deny.host_groups expression",
 				"parsing deny.host_sudoers expression",
 				"parsing deny.desktop_groups expression",
-				"parsing deny.impersonate.users expression",
-				"parsing deny.impersonate.roles expression",
 				"unsupported function: email.localz",
 			},
 		},
@@ -1141,7 +1139,7 @@ func TestValidateRole(t *testing.T) {
 					},
 				},
 			},
-			expectWarnings: []string{
+			expectErrorContains: []string{
 				"parsing allow.kubernetes_resources.namespace expression",
 				"parsing allow.kubernetes_resources.name expression",
 				"parsing allow.kubernetes_resources.verbs expression",
@@ -1151,11 +1149,84 @@ func TestValidateRole(t *testing.T) {
 				"unsupported function: email.localz",
 			},
 		},
+		{
+			name: "invalid session require filter",
+			spec: types.RoleSpecV6{
+				Allow: types.RoleConditions{
+					RequireSessionJoin: []*types.SessionRequirePolicy{
+						{
+							Name:   "test",
+							Filter: "contains(user.spec.roles, 'auditor')",
+							Kinds:  []string{"ssh"},
+							Modes:  []string{"moderator"},
+							Count:  1,
+						},
+					},
+				},
+			},
+			expectErrorContains: []string{
+				"require_session_join[0]: invalid filter",
+			},
+		},
+		{
+			name: "valid session require filter",
+			spec: types.RoleSpecV6{
+				Allow: types.RoleConditions{
+					RequireSessionJoin: []*types.SessionRequirePolicy{
+						{
+							Name:   "test",
+							Filter: `contains(user.spec.roles, "auditor")`,
+							Kinds:  []string{"ssh"},
+							Modes:  []string{"moderator"},
+							Count:  1,
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "invalid impersonate where expression",
+			spec: types.RoleSpecV6{
+				Allow: types.RoleConditions{
+					Impersonate: &types.ImpersonateConditions{
+						Users: []string{"alice"},
+						Roles: []string{"developer"},
+						Where: "invalidfunc(user.name)",
+					},
+				},
+			},
+			expectErrorContains: []string{
+				"allow.impersonate.where: invalid expression",
+			},
+		},
+		{
+			name: "valid impersonate where expression",
+			spec: types.RoleSpecV6{
+				Allow: types.RoleConditions{
+					Impersonate: &types.ImpersonateConditions{
+						Users: []string{"alice"},
+						Roles: []string{"developer"},
+						Where: `equals("a", "b")`,
+					},
+				},
+			},
+		},
+		{
+			name: "invalid db_roles trait template",
+			spec: types.RoleSpecV6{
+				Allow: types.RoleConditions{
+					DatabaseRoles: []string{"{{email.localz(external.email)}}"},
+				},
+			},
+			expectErrorContains: []string{
+				"parsing allow.db_roles expression",
+				"unsupported function: email.localz",
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var warning error
 			err := ValidateRole(&types.RoleV6{
 				Metadata: types.Metadata{
 					Name:      "name1",
@@ -1163,21 +1234,19 @@ func TestValidateRole(t *testing.T) {
 				},
 				Version: types.V8,
 				Spec:    tc.spec,
-			}, withWarningReporter(func(err error) {
-				warning = err
-			}))
+			})
 			if tc.expectError != nil {
 				require.ErrorIs(t, err, tc.expectError)
 				return
 			}
+			if len(tc.expectErrorContains) > 0 {
+				require.Error(t, err)
+				for _, msg := range tc.expectErrorContains {
+					require.ErrorContains(t, err, msg)
+				}
+				return
+			}
 			require.NoError(t, err, trace.DebugReport(err))
-
-			if len(tc.expectWarnings) == 0 {
-				require.NoError(t, warning)
-			}
-			for _, msg := range tc.expectWarnings {
-				require.ErrorContains(t, warning, msg)
-			}
 		})
 	}
 }
