@@ -69,6 +69,7 @@ import (
 	apiutils "github.com/gravitational/teleport/api/utils"
 	"github.com/gravitational/teleport/api/utils/keys"
 	"github.com/gravitational/teleport/api/utils/sshutils"
+	"github.com/gravitational/teleport/entitlements"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/auth/authclient"
 	"github.com/gravitational/teleport/lib/auth/authtest"
@@ -4862,9 +4863,120 @@ func TestGetAndList_WindowsDesktops(t *testing.T) {
 	require.Empty(t, resp.Resources)
 }
 
+func TestIsLocalOrRemoteServerAction(t *testing.T) {
+	ctx := t.Context()
+	mods := modulestest.OSSModules()
+	mods.TestFeatures.Entitlements[entitlements.K8s] = modules.EntitlementInfo{Enabled: false}
+	srv, err := authtest.NewAuthServer(authtest.AuthServerConfig{
+		Dir:     t.TempDir(),
+		Modules: mods,
+	})
+	require.NoError(t, err)
+
+	tts := []struct {
+		name      string
+		getSrvFn  func(t *testing.T) *auth.ServerWithRoles
+		expectErr bool
+	}{
+		{
+			name: "local server builtin",
+			getSrvFn: func(t *testing.T) *auth.ServerWithRoles {
+				authCtx, err := srv.Authorizer.Authorize(authz.ContextWithUser(ctx, authtest.TestBuiltin(types.RoleProxy).I))
+				require.NoError(t, err)
+				return auth.NewServerWithRoles(srv.AuthServer, srv.AuditLog, *authCtx)
+			},
+		},
+		{
+			name: "remote server builtin",
+			getSrvFn: func(t *testing.T) *auth.ServerWithRoles {
+				authCtx, err := srv.Authorizer.Authorize(authz.ContextWithUser(ctx, authtest.TestRemoteBuiltin(types.RoleProxy, "remote-cluster").I))
+				require.NoError(t, err)
+				return auth.NewServerWithRoles(srv.AuthServer, srv.AuditLog, *authCtx)
+			},
+		},
+		{
+			name: "local wrapped server builtin",
+			getSrvFn: func(t *testing.T) *auth.ServerWithRoles {
+				authCtx, err := srv.Authorizer.Authorize(authz.ContextWithUser(ctx, authtest.TestBuiltin(types.RoleProxy).I))
+				require.NoError(t, err)
+				return auth.NewScopedServerWithRoles(srv.AuthServer, srv.AuditLog, authz.ScopedContextFromUnscopedContext(authCtx))
+			},
+		},
+		{
+			name: "remote wrapped server builtin",
+			getSrvFn: func(t *testing.T) *auth.ServerWithRoles {
+				authCtx, err := srv.Authorizer.Authorize(authz.ContextWithUser(ctx, authtest.TestRemoteBuiltin(types.RoleProxy, "remote-cluster").I))
+				require.NoError(t, err)
+				return auth.NewScopedServerWithRoles(srv.AuthServer, srv.AuditLog, authz.ScopedContextFromUnscopedContext(authCtx))
+			},
+		},
+		{
+			name: "non-server builtin",
+			getSrvFn: func(t *testing.T) *auth.ServerWithRoles {
+				authCtx, err := srv.Authorizer.Authorize(authz.ContextWithUser(ctx, authtest.TestAdmin().I))
+				require.NoError(t, err)
+				return auth.NewServerWithRoles(srv.AuthServer, srv.AuditLog, *authCtx)
+			},
+			expectErr: true,
+		},
+		{
+			name: "wrapped non-server builtin",
+			getSrvFn: func(t *testing.T) *auth.ServerWithRoles {
+				authCtx, err := srv.Authorizer.Authorize(authz.ContextWithUser(ctx, authtest.TestAdmin().I))
+				require.NoError(t, err)
+				return auth.NewScopedServerWithRoles(srv.AuthServer, srv.AuditLog, authz.ScopedContextFromUnscopedContext(authCtx))
+			},
+			expectErr: true,
+		},
+		{
+			name: "remote non-builtin",
+			getSrvFn: func(t *testing.T) *auth.ServerWithRoles {
+				authCtx := authz.Context{
+					Identity: authz.RemoteBuiltinRole{
+						Role:        types.RoleNop,
+						Username:    string(types.RoleNop),
+						ClusterName: "remote-cluster",
+					},
+				}
+				return auth.NewServerWithRoles(srv.AuthServer, srv.AuditLog, authCtx)
+			},
+			expectErr: true,
+		},
+		{
+			name: "remote wrapped non-builtin",
+			getSrvFn: func(t *testing.T) *auth.ServerWithRoles {
+				authCtx := authz.Context{
+					Identity: authz.RemoteBuiltinRole{
+						Role:        types.RoleNop,
+						Username:    string(types.RoleNop),
+						ClusterName: "remote-cluster",
+					},
+				}
+				return auth.NewScopedServerWithRoles(srv.AuthServer, srv.AuditLog, authz.ScopedContextFromUnscopedContext(&authCtx))
+			},
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tts {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := tt.getSrvFn(t)
+			_, err := srv.ListResources(ctx, proto.ListResourcesRequest{
+				ResourceType: types.KindKubeServer,
+			})
+			if tt.expectErr {
+				require.Error(t, err)
+				require.ErrorContains(t, err, "not licensed")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestListResources_KindKubernetesCluster(t *testing.T) {
 	t.Setenv("TELEPORT_UNSTABLE_SCOPES", "yes")
-	ctx := context.Background()
+	ctx := t.Context()
 	srv := newTestTLSServer(t)
 
 	scopedAccess := srv.Auth().ScopedAccess()
