@@ -19,11 +19,8 @@
 package server
 
 import (
-	"cmp"
 	"context"
-	"errors"
 	"log/slog"
-	"maps"
 	"slices"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
@@ -40,15 +37,8 @@ import (
 
 const azureEventPrefix = "azure/"
 
-// maxPowerStateFallbackLookupsPerFetch caps per-VM calls when VMs are missing from the bulk StatusOnly response.
-// Without a cap, an incomplete bulk response would cause O(N) individual ARM calls, the same amplification the bulk
-// path is designed to avoid. VMs beyond the cap are passed through without a power-state check (fail-open).
-// The value is small enough that a total bulk-response gap cannot trigger an O(N) ARM scan, but large enough to
-// absorb transient gaps, e.g. VMs that just transitioned and haven't yet appeared in the bulk InstanceView.
-const maxPowerStateFallbackLookupsPerFetch = 10
-
 // powerFilterSkipReason names the reasons power-state filtering was not applied for a given poll cycle.
-// The empty value means "filtering was applied" (no skip). Used in fetchPowerStates return values and the
+// The empty value means "filtering was applied" (no skip). Used in fetchNonRunningStates return values and the
 // "reason" log attribute.
 type powerFilterSkipReason string
 
@@ -249,11 +239,16 @@ type resourceGroupLocation struct {
 	location      string
 }
 
-// GetInstances fetches all Azure virtual machines matching configured filters.
+// GetInstances fetches all Azure virtual machines matching configured filters,
+// drops known non-Linux VMs, and applies best-effort power-state filtering.
 //
-// Power-state filtering is best-effort: candidate VMs pass through unfiltered when the bulk status
-// fetch fails, or when individual VMs are missing from the bulk response and exceed the per-iteration
-// per-VM fallback cap. This avoids silently dropping reachable VMs from discovery due to transient ARM failures.
+// OS filtering: VMs with a known non-Linux OS type (e.g. Windows) are excluded;
+// VMs with unknown OS type pass through to avoid silently dropping Linux VMs
+// whose metadata is missing.
+//
+// Power-state filtering is best-effort: candidate VMs pass through unfiltered
+// when the bulk power-state fetch fails. Only VMs positively identified as
+// non-running are excluded.
 func (f *azureInstanceFetcher) GetInstances(ctx context.Context, _ bool) ([]*AzureInstances, error) {
 	azureClients, err := f.AzureClientGetter(ctx, f.IntegrationName())
 	if err != nil {
@@ -271,20 +266,14 @@ func (f *azureInstanceFetcher) GetInstances(ctx context.Context, _ bool) ([]*Azu
 	}
 
 	vms = f.filterNonLinux(ctx, vms)
-	instByRegionAndRG := f.groupCandidates(ctx, vms)
+	instByRegionAndRG, candidateCount := f.groupCandidates(ctx, vms)
 
-	candidateCount := 0
-	for _, grouped := range instByRegionAndRG {
-		candidateCount += len(grouped)
-	}
-
-	// Fetch power states, filter non-running VMs in place, log the summary. ARM RBAC-filters the subscription-wide
-	// ListVirtualMachineStates response to VMs the caller's identity can see, so both wildcard and non-wildcard
-	// resource-group fetchers issue the bulk call and reconcile the response against their local candidate set.
-	// If the fetch fails, power-state filtering is skipped and the matcher fails open. VMs missing from the
-	// bulk response trigger bounded per-VM fallback lookups, then fail open.
-	states, skipReason := f.fetchPowerStates(ctx, client, candidateCount)
-	if states == nil {
+	// Fetch known non-running VM states, filter matching candidates in place, log the summary. ARM RBAC-filters
+	// the subscription-wide bulk response to VMs the caller's identity can see, so both wildcard and non-wildcard
+	// resource-group fetchers issue the bulk call and reconcile that non-running set against their local candidates.
+	// If the fetch fails, power-state filtering is skipped and the matcher fails open.
+	nonRunning, skipReason := f.fetchNonRunningStates(ctx, client, candidateCount)
+	if nonRunning == nil {
 		f.Logger.DebugContext(ctx,
 			"Azure VM power-state filter not applied",
 			"subscription_id", f.Subscription,
@@ -294,12 +283,11 @@ func (f *azureInstanceFetcher) GetInstances(ctx context.Context, _ bool) ([]*Azu
 			"reason", skipReason,
 		)
 	} else {
-		var stats powerFilterStats
-		instByRegionAndRG, stats = f.filterNonRunning(ctx, client, instByRegionAndRG, states)
-		f.logPowerFilterSummary(ctx, candidateCount, len(states), stats)
+		filteredNonRunning := f.filterNonRunningInPlace(ctx, instByRegionAndRG, nonRunning)
+		f.logPowerFilterSummary(ctx, candidateCount, len(nonRunning), filteredNonRunning)
 	}
 
-	// fetchPowerStates and filterNonRunning's per-VM fallback both swallow ARM errors as "skip filter, fail open."
+	// fetchNonRunningStates swallows ARM errors as "skip filter, fail open."
 	// Cancellation shouldn't be treated that way: handing an unfiltered set to the installer during
 	// shutdown is incorrect API behavior. Propagate it instead.
 	if err := ctx.Err(); err != nil {
@@ -365,14 +353,15 @@ func (f *azureInstanceFetcher) filterNonLinux(
 func (f *azureInstanceFetcher) groupCandidates(
 	ctx context.Context,
 	vms []*armcompute.VirtualMachine,
-) map[resourceGroupLocation][]*armcompute.VirtualMachine {
+) (map[resourceGroupLocation][]*armcompute.VirtualMachine, int) {
 	byRG := make(map[resourceGroupLocation][]*armcompute.VirtualMachine)
+	candidateCount := 0
 	allowAllLocations := slices.Contains(f.Regions, types.Wildcard)
 	allowAllResourceGroups := f.ResourceGroup == types.Wildcard
 
 	for _, vm := range vms {
-		// Empty vm.ID has no map-lookup key downstream (states[""] would collide every empty-ID VM) and can't
-		// be parsed under wildcard RG. Skip with a single Warn rather than let it cascade.
+		// Empty vm.ID has no map-lookup key downstream (nonRunning[""] would collide every empty-ID VM) and
+		// can't be parsed under wildcard RG. Skip with a single Warn rather than let it cascade.
 		resourceID := azure.StringVal(vm.ID)
 		if resourceID == "" {
 			f.Logger.WarnContext(ctx, "Skipping Azure VM with empty resource ID",
@@ -415,22 +404,15 @@ func (f *azureInstanceFetcher) groupCandidates(
 			location:      location,
 		}
 		byRG[batchGroup] = append(byRG[batchGroup], vm)
+		candidateCount++
 	}
-	return byRG
+	return byRG, candidateCount
 }
 
-// powerFilterStats aggregates per-fetch counters emitted by filterNonRunning.
-type powerFilterStats struct {
-	fallbackLookups        int
-	fallbackFailures       int
-	fallbackLookupsSkipped int
-	filteredNonRunning     int
-}
-
-// fetchPowerStates returns the subscription-wide power-state map for this fetcher's subscription,
-// or nil with a non-empty skipReason when power-state filtering should be skipped for this cycle
-// (no candidates, or bulk fetch failed). skipReason is one of the powerFilterReason* constants.
-func (f *azureInstanceFetcher) fetchPowerStates(
+// fetchNonRunningStates returns the subscription-wide non-running power-state map for this fetcher's
+// subscription, or nil with a non-empty skipReason when power-state filtering should be skipped for this
+// cycle (no candidates, or bulk fetch failed). skipReason is one of the powerFilterReason* constants.
+func (f *azureInstanceFetcher) fetchNonRunningStates(
 	ctx context.Context,
 	client azure.VirtualMachinesClient,
 	candidateCount int,
@@ -438,7 +420,7 @@ func (f *azureInstanceFetcher) fetchPowerStates(
 	if candidateCount == 0 {
 		return nil, powerFilterReasonNoCandidates
 	}
-	states, err := client.ListVirtualMachineStates(ctx)
+	nonRunning, err := client.ListNonRunningVirtualMachineStates(ctx)
 	if err != nil {
 		// Intentionally swallowed: returning the error would halt discovery for this subscription for the
 		// entire poll cycle. Instead, skip power-state filtering (fail open) so candidates still flow through to enrollment.
@@ -464,155 +446,53 @@ func (f *azureInstanceFetcher) fetchPowerStates(
 		)
 		return nil, powerFilterReasonStatusFetchError
 	}
-	return states, ""
+	return nonRunning, ""
 }
 
-// filterNonRunning returns a new byRG map with non-running VMs removed from each batch group,
-// plus per-fetch counters for logging. VMs missing from the bulk status map trigger bounded
-// per-VM GetVMPowerState lookups (up to maxPowerStateFallbackLookupsPerFetch); beyond the cap,
-// VMs pass through unfiltered (fail open).
-//
-// The input map is not mutated: callers rebind to the returned map. Returning a fresh map
-// (rather than mutating in place) makes the filter result visible at the signature level and
-// keeps callers safe to clone, log, or reorder the input without silently losing filtering.
-//
-// Batch groups are iterated in a deterministic (resourceGroup, location) order so that when the
-// per-fetch fallback budget is exhausted, the same VMs fail open across poll cycles. Iterating
-// Go's map directly would randomize the order and shuffle which VMs miss their per-VM check between cycles.
-func (f *azureInstanceFetcher) filterNonRunning(
+// filterNonRunningInPlace removes non-running VMs from the grouped candidate map in place. Any VM
+// absent from the non-running map is treated as running or indeterminate and passes through.
+func (f *azureInstanceFetcher) filterNonRunningInPlace(
 	ctx context.Context,
-	client azure.VirtualMachinesClient,
 	byRG map[resourceGroupLocation][]*armcompute.VirtualMachine,
-	states map[string]azure.PowerState,
-) (map[resourceGroupLocation][]*armcompute.VirtualMachine, powerFilterStats) {
-	var stats powerFilterStats
-	filtered := make(map[resourceGroupLocation][]*armcompute.VirtualMachine, len(byRG))
-	batchGroups := slices.SortedFunc(maps.Keys(byRG), func(a, b resourceGroupLocation) int {
-		return cmp.Or(
-			cmp.Compare(a.resourceGroup, b.resourceGroup),
-			cmp.Compare(a.location, b.location),
-		)
-	})
-	for _, batchGroup := range batchGroups {
-		vms := byRG[batchGroup]
-		var running []*armcompute.VirtualMachine
-		for _, vm := range vms {
+	nonRunning map[string]azure.PowerState,
+) int {
+	filteredNonRunning := 0
+	for batchGroup, vms := range byRG {
+		byRG[batchGroup] = slices.DeleteFunc(vms, func(vm *armcompute.VirtualMachine) bool {
 			resourceID := azure.StringVal(vm.ID)
-			vmName := azure.StringVal(vm.Name)
-			resourceGroup := batchGroup.resourceGroup
-
-			state, inMap := states[resourceID]
-			if !inMap {
-				if stats.fallbackLookups >= maxPowerStateFallbackLookupsPerFetch {
-					stats.fallbackLookupsSkipped++
-					running = append(running, vm)
-					continue
-				}
-				stats.fallbackLookups++
-				// VM missing from bulk response — targeted
-				// per-VM fallback before deciding.
-				fallbackState, getErr := client.GetVMPowerState(ctx, resourceGroup, vmName)
-				if getErr != nil {
-					if errors.Is(getErr, context.Canceled) {
-						// Shutdown in progress: stop iterating so we don't emit a Warn per remaining VM.
-						// Returned partial data is discarded by GetInstances' ctx.Err() check before it
-						// reaches the caller; filterNonRunning itself doesn't return an error.
-						filtered[batchGroup] = running
-						return filtered, stats
-					}
-					stats.fallbackFailures++
-					// Fail-open: allow VM through to avoid
-					// silently dropping reachable VMs.
-					f.Logger.WarnContext(ctx,
-						"VM missing from bulk power state response and per-VM lookup failed, allowing VM to proceed",
-						"subscription_id", f.Subscription,
-						"resource_group", f.ResourceGroup,
-						"integration", f.Integration,
-						"vm_name", vmName,
-						"resource_id", resourceID,
-						"error", getErr,
-					)
-					running = append(running, vm)
-					continue
-				}
-				state = fallbackState
+			state, isNonRunning := nonRunning[resourceID]
+			if !isNonRunning {
+				return false
 			}
 
-			if state != azure.PowerStateRunning {
-				stats.filteredNonRunning++
-				f.Logger.DebugContext(ctx,
-					"Skipping Azure VM that is not running",
-					"vm_name", vmName,
-					"resource_id", resourceID,
-					"power_state", string(state),
-				)
-				continue
-			}
-
-			running = append(running, vm)
-		}
-		filtered[batchGroup] = running
+			filteredNonRunning++
+			f.Logger.DebugContext(ctx,
+				"Skipping Azure VM that is not running",
+				"vm_name", azure.StringVal(vm.Name),
+				"resource_id", resourceID,
+				"power_state", string(state),
+			)
+			return true
+		})
 	}
-	return filtered, stats
+	return filteredNonRunning
 }
 
 // logPowerFilterSummary emits per-iteration summary logs after power-state filtering has run:
-// info when non-running VMs were skipped, warn when the per-VM fallback fired or hit its cap,
-// plus a debug-level unified summary.
+// info when non-running VMs were skipped, plus a debug-level summary.
 func (f *azureInstanceFetcher) logPowerFilterSummary(
 	ctx context.Context,
-	candidateCount, bulkEntries int,
-	stats powerFilterStats,
+	candidateCount, nonRunningEntries, filteredNonRunning int,
 ) {
-	if stats.filteredNonRunning > 0 {
+	if filteredNonRunning > 0 {
 		f.Logger.InfoContext(ctx,
 			"Skipping Azure VMs that are not running",
 			"subscription_id", f.Subscription,
 			"resource_group", f.ResourceGroup,
 			"integration", f.Integration,
 			"candidate_vms", candidateCount,
-			"skipped", stats.filteredNonRunning,
-			"kept", candidateCount-stats.filteredNonRunning,
-		)
-	}
-	if stats.fallbackLookups > 0 {
-		// Fallback lookups are expected: the cap's whole purpose is to
-		// absorb transient bulk-map gaps (e.g. VMs mid-transition). Only
-		// elevate to Warn when a fallback actually failed or the cap was
-		// hit, so routine operation doesn't train operators to ignore Warn.
-		level := slog.LevelDebug
-		if stats.fallbackFailures > 0 || stats.fallbackLookupsSkipped > 0 {
-			level = slog.LevelWarn
-		}
-		f.Logger.Log(ctx, level,
-			"Azure VMs required per-VM power-state fallback lookups",
-			"subscription_id", f.Subscription,
-			"resource_group", f.ResourceGroup,
-			"integration", f.Integration,
-			"candidate_vms", candidateCount,
-			"bulk_status_entries", bulkEntries,
-			"fallback_lookups", stats.fallbackLookups,
-			"fallback_failures", stats.fallbackFailures,
-		)
-	}
-	if stats.fallbackLookupsSkipped > 0 {
-		// Escalate to Error when the bypass ratio is high so alerting can
-		// distinguish a handful of VMs mid-transition from a systemic ARM-side
-		// InstanceView gap across the subscription.
-		level := slog.LevelWarn
-		if candidateCount > 0 &&
-			float64(stats.fallbackLookupsSkipped)/float64(candidateCount) > 0.2 {
-			level = slog.LevelError
-		}
-		f.Logger.Log(ctx, level,
-			"Azure VM power-state fallback lookup limit reached, allowing remaining VMs to proceed without per-VM power check",
-			"subscription_id", f.Subscription,
-			"resource_group", f.ResourceGroup,
-			"integration", f.Integration,
-			"candidate_vms", candidateCount,
-			"fallback_lookup_limit", maxPowerStateFallbackLookupsPerFetch,
-			"fallback_lookups", stats.fallbackLookups,
-			"fallback_lookups_skipped", stats.fallbackLookupsSkipped,
+			"skipped", filteredNonRunning,
+			"kept", candidateCount-filteredNonRunning,
 		)
 	}
 	f.Logger.DebugContext(ctx,
@@ -621,10 +501,7 @@ func (f *azureInstanceFetcher) logPowerFilterSummary(
 		"resource_group", f.ResourceGroup,
 		"integration", f.Integration,
 		"candidate_vms", candidateCount,
-		"bulk_status_entries", bulkEntries,
-		"fallback_lookups", stats.fallbackLookups,
-		"fallback_failures", stats.fallbackFailures,
-		"fallback_lookups_skipped", stats.fallbackLookupsSkipped,
-		"filtered_non_running", stats.filteredNonRunning,
+		"non_running_entries", nonRunningEntries,
+		"filtered_non_running", filteredNonRunning,
 	)
 }

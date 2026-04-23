@@ -20,7 +20,6 @@ package azure
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
@@ -54,12 +53,6 @@ type scaleSet interface {
 	Get(ctx context.Context, resourceGroupName string, vmScaleSetName string, instanceID string, options *armcompute.VirtualMachineScaleSetVMsClientGetOptions) (armcompute.VirtualMachineScaleSetVMsClientGetResponse, error)
 }
 
-// ErrNoInstanceView indicates the VM response had no InstanceView, so power state cannot be determined.
-var ErrNoInstanceView = errors.New("no instance view")
-
-// ErrNoPowerState indicates the VM's InstanceView had no PowerState/* status entry.
-var ErrNoPowerState = errors.New("no power state in instance view")
-
 // PowerState represents the power state of an Azure virtual machine.
 type PowerState string
 
@@ -79,9 +72,11 @@ const (
 
 // ParsePowerState extracts the first PowerState/* status from an InstanceView status list.
 //
-//   - PowerState* → a recognized power state.
-//   - PowerStateOther → a PowerState/* entry exists but the suffix is unsupported (e.g. "starting").
-//   - PowerStateUnknown → no PowerState/* entry exists at all.
+// It returns PowerStateRunning for PowerState/running, PowerStateDeallocated for
+// PowerState/deallocated, and PowerStateStopped for PowerState/stopped.
+// PowerStateOther means a PowerState/* entry exists but its suffix is unsupported
+// (for example, PowerState/starting). PowerStateUnknown means no PowerState/*
+// entry exists at all.
 func ParsePowerState(statuses []*armcompute.InstanceViewStatus) PowerState {
 	for _, status := range statuses {
 		if status == nil || status.Code == nil {
@@ -124,9 +119,10 @@ type FilteredVMs struct {
 	Skipped []SkippedVM
 }
 
-// FilterLinuxVMs partitions VMs into Linux-compatible (Linux + unknown OS) and
-// skipped (known non-Linux OS like Windows). VMs with unknown OS type are allowed
-// through because missing metadata should not silently prevent discovery of legitimate Linux VMs.
+// FilterLinuxVMs ignores nil entries and partitions the remaining VMs into
+// Linux-compatible (Linux + unknown OS) and skipped (known non-Linux OS like Windows).
+// VMs with unknown OS type are allowed through because missing metadata should not
+// silently prevent discovery of legitimate Linux VMs.
 func FilterLinuxVMs(vms []*armcompute.VirtualMachine) FilteredVMs {
 	var result FilteredVMs
 	for _, vm := range vms {
@@ -177,14 +173,13 @@ type VirtualMachinesClient interface {
 	// GetByVMID returns the virtual machine for a given VM ID.
 	GetByVMID(ctx context.Context, vmID string) (*VirtualMachine, error)
 	// ListVirtualMachines gets all of the virtual machines in the given resource group.
+	// If resourceGroup is "*", it lists all virtual machines in any resource group.
 	ListVirtualMachines(ctx context.Context, resourceGroup string) ([]*armcompute.VirtualMachine, error)
-	// ListVirtualMachineStates returns known VM power states keyed by resource ID (vm.ID).
-	// Uses StatusOnly=true on a subscription-wide ListAll and omits VMs whose power state
-	// cannot be determined from the bulk response.
-	ListVirtualMachineStates(ctx context.Context) (map[string]PowerState, error)
-	// GetVMPowerState returns the power state for a single VM using Get with $expand=instanceView.
-	// Returns an error if the response has no InstanceView or no PowerState status.
-	GetVMPowerState(ctx context.Context, resourceGroup, vmName string) (PowerState, error)
+	// ListNonRunningVirtualMachineStates returns known non-running VM power states keyed by
+	// resource ID. Uses StatusOnly=true on a subscription-wide ListAll. Omits VMs that
+	// cannot be reconciled by vm.ID, as well as VMs whose power state is running or
+	// indeterminate.
+	ListNonRunningVirtualMachineStates(ctx context.Context) (map[string]PowerState, error)
 }
 
 // VirtualMachine represents an Azure virtual machine.
@@ -298,14 +293,9 @@ func parseVirtualMachine[T vmTypes](vm T) (*VirtualMachine, error) {
 
 // Get returns the virtual machine (including scale set VMs) for the given
 // resource ID.
-//
-// The virtual machine scale set (VMSS) supports two types of orchestration
-// modes: uniform and flexible. Both have different resource ID format from the
-// instance metadata API. A VM from a uniform VMSS has a different resource ID
-// and requires a different API to retrieve its information. Flexible VMSS VMs
-// use the same resource ID format as regular VMs and don't require special
-// handling.
 func (c *vmClient) Get(ctx context.Context, resourceID string) (*VirtualMachine, error) {
+	// Uniform VMSS VMs must be fetched via the scale-set client. Their resource ID format isn't
+	// resolvable by the standard VM API. Flexible VMSS VMs use the regular format and fall through.
 	parsedResourceID, err := arm.ParseResourceID(resourceID)
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -382,9 +372,8 @@ func newListAllPager(azurePager *runtime.Pager[armcompute.VirtualMachinesClientL
 	}
 }
 
-// ListVirtualMachines lists all virtual machines in a given resource group
-// using the Azure virtual machines API. If resourceGroup is "*", it lists
-// all virtual machines in any resource group.
+// ListVirtualMachines lists all virtual machines in a given resource group.
+// If resourceGroup is "*", it lists all virtual machines in any resource group.
 func (c *vmClient) ListVirtualMachines(ctx context.Context, resourceGroup string) ([]*armcompute.VirtualMachine, error) {
 	var pager vmPager
 	if resourceGroup == types.Wildcard {
@@ -404,15 +393,16 @@ func (c *vmClient) ListVirtualMachines(ctx context.Context, resourceGroup string
 	return virtualMachines, nil
 }
 
-// ListVirtualMachineStates returns known VM power states keyed by resource ID (vm.ID).
-// Uses StatusOnly=true on a subscription-wide ListAll and omits VMs whose power state
-// cannot be determined from the bulk response.
-func (c *vmClient) ListVirtualMachineStates(ctx context.Context) (map[string]PowerState, error) {
+// ListNonRunningVirtualMachineStates returns known non-running VM power states keyed by
+// resource ID. Uses StatusOnly=true on a subscription-wide ListAll. Omits VMs that
+// cannot be reconciled by vm.ID, as well as VMs whose power state is running or
+// indeterminate.
+func (c *vmClient) ListNonRunningVirtualMachineStates(ctx context.Context) (map[string]PowerState, error) {
 	pager := newListAllPager(c.api.NewListAllPager(&armcompute.VirtualMachinesClientListAllOptions{
 		StatusOnly: to.Ptr("true"),
 	}))
 
-	states := make(map[string]PowerState)
+	nonRunning := make(map[string]PowerState)
 	for pager.more() {
 		res, err := pager.nextPage(ctx)
 		if err != nil {
@@ -425,39 +415,18 @@ func (c *vmClient) ListVirtualMachineStates(ctx context.Context) (map[string]Pow
 				continue
 			}
 			if vm.Properties == nil || vm.Properties.InstanceView == nil {
-				// No InstanceView — skip VM. Caller treats "not in map" as "state indeterminate."
+				// No InstanceView — skip VM. Caller treats "not in map" as "running or indeterminate."
 				continue
 			}
 			state := ParsePowerState(vm.Properties.InstanceView.Statuses)
-			if state == PowerStateUnknown {
+			if state == PowerStateUnknown || state == PowerStateRunning {
 				continue
 			}
-			states[resourceID] = state
+			nonRunning[resourceID] = state
 		}
 	}
 
-	return states, nil
-}
-
-// GetVMPowerState returns the power state for a single VM by calling Get with $expand=instanceView.
-// Returns an error if the response has no InstanceView or no PowerState status entry.
-func (c *vmClient) GetVMPowerState(ctx context.Context, resourceGroup, vmName string) (PowerState, error) {
-	resp, err := c.api.Get(ctx, resourceGroup, vmName, &armcompute.VirtualMachinesClientGetOptions{
-		Expand: to.Ptr(armcompute.InstanceViewTypesInstanceView),
-	})
-
-	if err != nil {
-		return PowerStateUnknown, trace.Wrap(ConvertResponseError(err))
-	}
-	if resp.Properties == nil || resp.Properties.InstanceView == nil {
-		return PowerStateUnknown, trace.Wrap(ErrNoInstanceView, "vm %q in resource group %q", vmName, resourceGroup)
-	}
-	state := ParsePowerState(resp.Properties.InstanceView.Statuses)
-	if state == PowerStateUnknown {
-		return PowerStateUnknown, trace.Wrap(ErrNoPowerState, "vm %q in resource group %q", vmName, resourceGroup)
-	}
-
-	return state, nil
+	return nonRunning, nil
 }
 
 // RunCommandRequest combines parameters for running a command on an Azure virtual machine.

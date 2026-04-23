@@ -576,7 +576,7 @@ func TestFilterLinuxVMs(t *testing.T) {
 	}
 }
 
-func TestListVirtualMachineStates(t *testing.T) {
+func TestListNonRunningVirtualMachineStates(t *testing.T) {
 	t.Parallel()
 
 	mockAPI := &ARMComputeMock{
@@ -645,124 +645,35 @@ func TestListVirtualMachineStates(t *testing.T) {
 						},
 					},
 				},
+				{
+					ID: to.Ptr("/sub/rg1/vm7"),
+					Properties: &armcompute.VirtualMachineProperties{
+						VMID: to.Ptr("vmid-7"),
+						InstanceView: &armcompute.VirtualMachineInstanceView{
+							Statuses: []*armcompute.InstanceViewStatus{
+								{Code: to.Ptr("PowerState/stopped")},
+							},
+						},
+					},
+				},
 			},
 		},
 	}
 
 	client := NewVirtualMachinesClientByAPI(mockAPI, nil)
 
-	states, err := client.ListVirtualMachineStates(t.Context())
+	nonRunning, err := client.ListNonRunningVirtualMachineStates(t.Context())
 	require.NoError(t, err)
+	// vm1 is running → excluded.
+	// vm2 is deallocated → included as PowerStateDeallocated.
 	// vm3 has nil InstanceView → excluded.
 	// vm4 has unrecognized "starting" → included as PowerStateOther.
+	// vm5 has nil ID → excluded.
+	// vm6 has no PowerState/* entry → excluded.
+	// vm7 is stopped → included as PowerStateStopped.
 	require.Equal(t, map[string]PowerState{
-		"/sub/rg1/vm1": PowerStateRunning,
 		"/sub/rg1/vm2": PowerStateDeallocated,
 		"/sub/rg1/vm4": PowerStateOther,
-	}, states)
-}
-
-func TestGetVMPowerState(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name        string
-		mockAPI     *ARMComputeMock
-		wantState   PowerState
-		assertError require.ErrorAssertionFunc
-		errorIs     error
-	}{
-		{
-			name: "returns power state result",
-			mockAPI: &ARMComputeMock{
-				GetResult: armcompute.VirtualMachine{
-					Properties: &armcompute.VirtualMachineProperties{
-						InstanceView: &armcompute.VirtualMachineInstanceView{
-							Statuses: []*armcompute.InstanceViewStatus{
-								{Code: to.Ptr("ProvisioningState/succeeded")},
-								{Code: to.Ptr("PowerState/running")},
-							},
-						},
-					},
-				},
-			},
-			wantState:   PowerStateRunning,
-			assertError: require.NoError,
-		},
-		{
-			name: "API failure returns error",
-			mockAPI: &ARMComputeMock{
-				GetErr: fmt.Errorf("network timeout"),
-			},
-			assertError: require.Error,
-		},
-		{
-			name: "nil Properties returns ErrNoInstanceView",
-			mockAPI: &ARMComputeMock{
-				GetResult: armcompute.VirtualMachine{},
-			},
-			assertError: require.Error,
-			errorIs:     ErrNoInstanceView,
-		},
-		{
-			name: "nil InstanceView returns ErrNoInstanceView",
-			mockAPI: &ARMComputeMock{
-				GetResult: armcompute.VirtualMachine{
-					Properties: &armcompute.VirtualMachineProperties{},
-				},
-			},
-			assertError: require.Error,
-			errorIs:     ErrNoInstanceView,
-		},
-		{
-			name: "no PowerState entry returns ErrNoPowerState",
-			mockAPI: &ARMComputeMock{
-				GetResult: armcompute.VirtualMachine{
-					Properties: &armcompute.VirtualMachineProperties{
-						InstanceView: &armcompute.VirtualMachineInstanceView{
-							Statuses: []*armcompute.InstanceViewStatus{
-								{Code: to.Ptr("ProvisioningState/succeeded")},
-							},
-						},
-					},
-				},
-			},
-			assertError: require.Error,
-			errorIs:     ErrNoPowerState,
-		},
-		{
-			name: "unrecognized power state returns PowerStateOther",
-			mockAPI: &ARMComputeMock{
-				GetResult: armcompute.VirtualMachine{
-					Properties: &armcompute.VirtualMachineProperties{
-						InstanceView: &armcompute.VirtualMachineInstanceView{
-							Statuses: []*armcompute.InstanceViewStatus{
-								{Code: to.Ptr("PowerState/starting")},
-							},
-						},
-					},
-				},
-			},
-			wantState:   PowerStateOther,
-			assertError: require.NoError,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			client := NewVirtualMachinesClientByAPI(tc.mockAPI, nil)
-
-			state, err := client.GetVMPowerState(t.Context(), "rg1", "vm1")
-			lastOpts := tc.mockAPI.LastGetOptions.Load()
-			require.NotNil(t, lastOpts)
-			require.NotNil(t, lastOpts.Expand)
-			require.Equal(t, armcompute.InstanceViewTypesInstanceView, *lastOpts.Expand)
-			tc.assertError(t, err)
-			if tc.errorIs != nil {
-				require.ErrorIs(t, err, tc.errorIs)
-			}
-			if err == nil {
-				require.Equal(t, tc.wantState, state)
-			}
-		})
-	}
+		"/sub/rg1/vm7": PowerStateStopped,
+	}, nonRunning)
 }

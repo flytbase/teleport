@@ -52,10 +52,10 @@ func (c *mockClients) GetVirtualMachinesClient(ctx context.Context, subscription
 type countingVirtualMachinesClient struct {
 	vms                []*armcompute.VirtualMachine
 	vmsByResourceGroup map[string][]*armcompute.VirtualMachine
-	statuses           map[string]azure.PowerState
-	statusesCalls      int
-	getPowerState      azure.PowerState
-	getPowerStateErr   error
+	nonRunning         map[string]azure.PowerState
+	nonRunningCalls    int
+	nonRunningErr      error
+	beforeNonRunning   func(context.Context)
 }
 
 func (*countingVirtualMachinesClient) Get(context.Context, string) (*azure.VirtualMachine, error) {
@@ -80,13 +80,22 @@ func (c *countingVirtualMachinesClient) ListVirtualMachines(_ context.Context, r
 	return c.vmsByResourceGroup[resourceGroup], nil
 }
 
-func (c *countingVirtualMachinesClient) ListVirtualMachineStates(context.Context) (map[string]azure.PowerState, error) {
-	c.statusesCalls++
-	return c.statuses, nil
+func (c *countingVirtualMachinesClient) ListNonRunningVirtualMachineStates(ctx context.Context) (map[string]azure.PowerState, error) {
+	return c.listNonRunningVirtualMachineStates(ctx)
 }
 
-func (c *countingVirtualMachinesClient) GetVMPowerState(context.Context, string, string) (azure.PowerState, error) {
-	return c.getPowerState, c.getPowerStateErr
+func (c *countingVirtualMachinesClient) listNonRunningVirtualMachineStates(ctx context.Context) (map[string]azure.PowerState, error) {
+	c.nonRunningCalls++
+	if c.beforeNonRunning != nil {
+		c.beforeNonRunning(ctx)
+	}
+	if c.nonRunningErr != nil {
+		return nil, c.nonRunningErr
+	}
+	if c.nonRunning == nil {
+		return map[string]azure.PowerState{}, nil
+	}
+	return c.nonRunning, nil
 }
 
 func TestAzureWatcher(t *testing.T) {
@@ -598,26 +607,6 @@ func TestAzureWatcher_PowerStateFiltering(t *testing.T) {
 			"all running VMs must pass through the filter without loss")
 	})
 
-	t.Run("duplicate wildcard matchers still filter non-running VMs", func(t *testing.T) {
-		matcher := types.AzureMatcher{
-			Types:          []string{"vm"},
-			Subscriptions:  []string{sub},
-			ResourceGroups: []string{types.Wildcard},
-			Regions:        []string{types.Wildcard},
-			ResourceTags:   types.Labels{"*": []string{"*"}},
-		}
-
-		// Each of the two identical fetchers should independently filter
-		// down to the one running VM. Concatenate results from both.
-		allVMNames := append(
-			runFilter(t, matcher, &clients),
-			runFilter(t, matcher, &clients)...,
-		)
-
-		require.ElementsMatch(t, []string{"vm-running", "vm-running"}, allVMNames,
-			"only running VMs should pass through for each wildcard fetcher")
-	})
-
 	t.Run("wildcard matcher skips power-state filtering when bulk status fetch fails", func(t *testing.T) {
 		matcher := types.AzureMatcher{
 			Types:          []string{"vm"},
@@ -649,7 +638,7 @@ func TestAzureWatcher_PowerStateFiltering(t *testing.T) {
 			"wildcard fetchers should fail open when the bulk status fetch fails")
 	})
 
-	t.Run("wildcard matcher allows VM through when fallback lookup fails", func(t *testing.T) {
+	t.Run("wildcard matcher allows VM through when bulk state omits it", func(t *testing.T) {
 		matcher := types.AzureMatcher{
 			Types:          []string{"vm"},
 			Subscriptions:  []string{sub},
@@ -667,7 +656,7 @@ func TestAzureWatcher_PowerStateFiltering(t *testing.T) {
 			},
 		}
 
-		fallbackClients := mockClients{
+		missingStateClients := mockClients{
 			vmClients: map[string]azure.VirtualMachinesClient{
 				sub: azure.NewVirtualMachinesClientByAPI(&azure.ARMComputeMock{
 					VirtualMachines: map[string][]*armcompute.VirtualMachine{
@@ -676,30 +665,14 @@ func TestAzureWatcher_PowerStateFiltering(t *testing.T) {
 							vmMissingFromBulk,
 						},
 					},
-					GetErr: fmt.Errorf("fallback lookup failed"),
 				}, nil),
 			},
 		}
 
-		vmNames := runFilter(t, matcher, &fallbackClients)
+		vmNames := runFilter(t, matcher, &missingStateClients)
 
 		require.ElementsMatch(t, []string{"vm-running", "vm-missing"}, vmNames,
-			"VMs missing from the bulk map should fail open if fallback lookup fails")
-	})
-
-	t.Run("non-wildcard matcher filters non-running VMs", func(t *testing.T) {
-		matcher := types.AzureMatcher{
-			Types:          []string{"vm"},
-			Subscriptions:  []string{sub},
-			ResourceGroups: []string{"rg1"},
-			Regions:        []string{types.Wildcard},
-			ResourceTags:   types.Labels{"*": []string{"*"}},
-		}
-
-		vmNames := runFilter(t, matcher, &clients)
-
-		require.ElementsMatch(t, []string{"vm-running"}, vmNames,
-			"non-wildcard resource-group fetchers should apply power-state filtering by reconciling against the RBAC-filtered bulk status response")
+			"VMs missing from the bulk non-running map should fail open")
 	})
 
 }
@@ -744,11 +717,58 @@ func TestAzureWatcher_SkipBulkStatusFetchWhenNoCandidates(t *testing.T) {
 	results, err := fetcher.GetInstances(t.Context(), false)
 	require.NoError(t, err)
 	require.Empty(t, results)
-	require.Zero(t, client.statusesCalls,
-		"wildcard fetchers should skip the bulk status scan when no VMs match local filters")
+	require.Zero(t, client.nonRunningCalls,
+		"wildcard fetchers should skip the bulk non-running scan when no VMs match local filters")
 }
 
-func TestAzureWatcher_NonWildcardReconcilesAgainstSubscriptionStatuses(t *testing.T) {
+func TestAzureWatcher_CanceledDuringPowerStateFetchDoesNotReturnInstances(t *testing.T) {
+	t.Parallel()
+
+	const sub = "00000000-0000-0000-0000-000000000000"
+
+	ctx, cancel := context.WithCancel(t.Context())
+	client := &countingVirtualMachinesClient{
+		vms: []*armcompute.VirtualMachine{
+			{
+				ID:       to.Ptr(makeAzureVMID(sub, "rg1", "vm-running")),
+				Name:     to.Ptr("vm-running"),
+				Location: to.Ptr("eastus"),
+				Properties: &armcompute.VirtualMachineProperties{
+					VMID: to.Ptr("vmid-running"),
+				},
+			},
+		},
+		nonRunningErr: context.Canceled,
+		beforeNonRunning: func(context.Context) {
+			cancel()
+		},
+	}
+
+	fetcher := newAzureInstanceFetcher(azureFetcherConfig{
+		Matcher: types.AzureMatcher{
+			Types:          []string{"vm"},
+			Subscriptions:  []string{sub},
+			ResourceGroups: []string{types.Wildcard},
+			Regions:        []string{types.Wildcard},
+			ResourceTags:   types.Labels{"*": []string{"*"}},
+		},
+		Subscription:  sub,
+		ResourceGroup: types.Wildcard,
+		AzureClientGetter: func(context.Context, string) (azure.Clients, error) {
+			return &mockClients{vmClients: map[string]azure.VirtualMachinesClient{sub: client}}, nil
+		},
+		Logger: logtest.NewLogger(),
+	})
+
+	results, err := fetcher.GetInstances(ctx, false)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, results,
+		"GetInstances must not hand an unfiltered candidate set to the installer during shutdown")
+	require.Equal(t, 1, client.nonRunningCalls,
+		"cancellation should happen after the bulk non-running fetch path is entered")
+}
+
+func TestAzureWatcher_NonWildcardReconcilesAgainstSubscriptionNonRunningEntries(t *testing.T) {
 	t.Parallel()
 
 	const sub = "00000000-0000-0000-0000-000000000000"
@@ -784,14 +804,12 @@ func TestAzureWatcher_NonWildcardReconcilesAgainstSubscriptionStatuses(t *testin
 				},
 			},
 		},
-		// Simulate the bulk ListVirtualMachineStates response as a
-		// superset: the subscription-wide call returns statuses for VMs
-		// outside this fetcher's resource group. Those entries must be
-		// ignored during local reconciliation.
-		statuses: map[string]azure.PowerState{
-			makeAzureVMID(sub, "rg1", "vm-rg1-running"): azure.PowerStateRunning,
+		// Simulate the bulk ListNonRunningVirtualMachineStates response as a superset:
+		// the subscription-wide call returns non-running entries for VMs outside this
+		// fetcher's resource group. Those entries must be ignored during local reconciliation.
+		nonRunning: map[string]azure.PowerState{
 			makeAzureVMID(sub, "rg1", "vm-rg1-stopped"): azure.PowerStateStopped,
-			makeAzureVMID(sub, "rg2", "vm-rg2-running"): azure.PowerStateRunning,
+			makeAzureVMID(sub, "rg2", "vm-rg2-stopped"): azure.PowerStateStopped,
 		},
 	}
 
@@ -822,118 +840,9 @@ func TestAzureWatcher_NonWildcardReconcilesAgainstSubscriptionStatuses(t *testin
 	}
 
 	require.Equal(t, []string{"vm-rg1-running"}, names,
-		"non-wildcard fetcher must reconcile bulk status against candidates: running rg1 VM passes, stopped rg1 VM filtered, rg2 VM never appears")
-	require.Equal(t, 1, client.statusesCalls,
-		"non-wildcard fetcher must issue the bulk status call exactly once")
-}
-
-func TestAzureWatcher_FallbackLookupCap(t *testing.T) {
-	t.Parallel()
-
-	const sub = "00000000-0000-0000-0000-000000000000"
-
-	// Build VMs without InstanceView — these will be present in
-	// ListVirtualMachines but missing from ListVirtualMachineStates
-	// (which only returns VMs with parseable InstanceView power
-	// states). This forces fallback per-VM lookups in GetInstances.
-	//
-	// The mock's Get always returns GetResult, so we set GetResult
-	// to a stopped VM. Up to maxPowerStateFallbackLookupsPerFetch
-	// VMs will be looked up individually and filtered as stopped.
-	// VMs beyond the cap are passed through without checking
-	// (fail-open).
-	vmCount := maxPowerStateFallbackLookupsPerFetch + 3
-	var vms []*armcompute.VirtualMachine
-	for i := range vmCount {
-		name := fmt.Sprintf("vm-%02d", i)
-		vms = append(vms, &armcompute.VirtualMachine{
-			ID:       to.Ptr(makeAzureVMID(sub, "rg1", name)),
-			Name:     to.Ptr(name),
-			Location: to.Ptr("eastus"),
-			Properties: &armcompute.VirtualMachineProperties{
-				VMID: to.Ptr("vmid-" + name),
-				// No InstanceView — will be missing from bulk
-				// status map.
-			},
-		})
-	}
-
-	// Also add one running VM WITH InstanceView so it appears in the
-	// bulk map and passes through normally.
-	vms = append(vms, &armcompute.VirtualMachine{
-		ID:       to.Ptr(makeAzureVMID(sub, "rg1", "vm-running")),
-		Name:     to.Ptr("vm-running"),
-		Location: to.Ptr("eastus"),
-		Properties: &armcompute.VirtualMachineProperties{
-			VMID: to.Ptr("vmid-running"),
-			InstanceView: &armcompute.VirtualMachineInstanceView{
-				Statuses: []*armcompute.InstanceViewStatus{
-					{Code: to.Ptr("PowerState/running")},
-				},
-			},
-		},
-	})
-
-	mockAPI := &azure.ARMComputeMock{
-		VirtualMachines: map[string][]*armcompute.VirtualMachine{
-			"rg1": vms,
-		},
-		// Per-VM fallback calls Get, which returns this result.
-		// Stopped state means the first 10 fallback VMs get filtered.
-		GetResult: armcompute.VirtualMachine{
-			Properties: &armcompute.VirtualMachineProperties{
-				InstanceView: &armcompute.VirtualMachineInstanceView{
-					Statuses: []*armcompute.InstanceViewStatus{
-						{Code: to.Ptr("PowerState/stopped")},
-					},
-				},
-			},
-		},
-	}
-
-	clients := mockClients{
-		vmClients: map[string]azure.VirtualMachinesClient{
-			sub: azure.NewVirtualMachinesClientByAPI(mockAPI, nil),
-		},
-	}
-
-	fetcher := newAzureInstanceFetcher(azureFetcherConfig{
-		Matcher: types.AzureMatcher{
-			Types:        []string{"vm"},
-			Regions:      []string{types.Wildcard},
-			ResourceTags: types.Labels{"*": []string{"*"}},
-		},
-		Subscription:  sub,
-		ResourceGroup: types.Wildcard,
-		AzureClientGetter: func(ctx context.Context, integration string) (azure.Clients, error) {
-			return &clients, nil
-		},
-		Logger: logtest.NewLogger(),
-	})
-
-	results, err := fetcher.GetInstances(t.Context(), false)
-	require.NoError(t, err)
-
-	var names []string
-	for _, group := range results {
-		for _, vm := range group.Instances {
-			names = append(names, *vm.Name)
-		}
-	}
-
-	// Expected:
-	// - "vm-running" passes via bulk status map.
-	// - maxPowerStateFallbackLookupsPerFetch VMs are looked up
-	//   individually (all return stopped → filtered out).
-	// - Remaining no-InstanceView VMs exceed the cap and are
-	//   passed through without a power-state check (fail-open).
-	require.Contains(t, names, "vm-running",
-		"VM with running state in bulk map should pass through")
-
-	beyondCap := vmCount - maxPowerStateFallbackLookupsPerFetch
-	// 1 (vm-running) + beyondCap (fail-open VMs)
-	require.Len(t, names, 1+beyondCap,
-		"result should contain the running VM plus only the VMs that exceeded the fallback cap")
+		"non-wildcard fetcher must reconcile bulk non-running entries against candidates: running rg1 VM passes, stopped rg1 VM filtered, rg2 VM never appears")
+	require.Equal(t, 1, client.nonRunningCalls,
+		"non-wildcard fetcher must issue the bulk non-running call exactly once")
 }
 
 // TestAzureWatcher_GroupCandidates_NilPropertiesDoesNotPanic exercises the
@@ -974,10 +883,11 @@ func TestAzureWatcher_GroupCandidates_NilPropertiesDoesNotPanic(t *testing.T) {
 	})
 
 	require.NotPanics(t, func() {
-		byRG := fetcher.groupCandidates(t.Context(), []*armcompute.VirtualMachine{malformed, healthy})
+		byRG, candidateCount := fetcher.groupCandidates(t.Context(), []*armcompute.VirtualMachine{malformed, healthy})
 
 		// Malformed VM was skipped by the continue in the error branch;
 		// healthy VM was grouped under its inferred (rg1, eastus) bucket.
+		require.Equal(t, 1, candidateCount)
 		require.Len(t, byRG, 1,
 			"only the healthy VM should be grouped; the malformed one must be skipped, not kill the fetcher")
 		for batchGroup, vms := range byRG {
@@ -1144,95 +1054,6 @@ func TestAzureWatcher_FilterNonLinux(t *testing.T) {
 
 	require.ElementsMatch(t, []string{"vm-linux", "vm-unknown-os"}, vmNames,
 		"Linux and unknown-OS VMs pass through; Windows VMs are dropped by filterNonLinux")
-}
-
-// TestAzureWatcher_FilterNonRunning_DeterministicAcrossRGs verifies that when the
-// per-fetch fallback budget is exhausted across multiple resource groups, the same
-// resource groups consume the budget on every invocation — i.e. the same stopped
-// VM never "wins" the fallback on one poll and "loses" it on the next. Go's
-// map iteration order is randomized, so filterNonRunning must iterate batch
-// groups in a stable (resourceGroup, location) order.
-//
-// Fixture: two RGs with 7 VMs each (14 total), all missing from the bulk map,
-// cap = 10. With sorted iteration, "rg-a" consumes the full 7-slot first burst,
-// "rg-b" uses the next 3, and the remaining 4 in "rg-b" fail open. Without
-// sorting, which RG's VMs fail open flips between invocations.
-func TestAzureWatcher_FilterNonRunning_DeterministicAcrossRGs(t *testing.T) {
-	t.Parallel()
-
-	const sub = "00000000-0000-0000-0000-000000000000"
-
-	buildVMs := func(rg string) []*armcompute.VirtualMachine {
-		var vms []*armcompute.VirtualMachine
-		for i := range 7 {
-			name := fmt.Sprintf("%s-vm-%d", rg, i)
-			vms = append(vms, &armcompute.VirtualMachine{
-				ID:       to.Ptr(makeAzureVMID(sub, rg, name)),
-				Name:     to.Ptr(name),
-				Location: to.Ptr("eastus"),
-			})
-		}
-		return vms
-	}
-
-	client := &countingVirtualMachinesClient{
-		getPowerState: azure.PowerStateStopped,
-	}
-	fetcher := newAzureInstanceFetcher(azureFetcherConfig{
-		Matcher: types.AzureMatcher{
-			Types:        []string{"vm"},
-			Regions:      []string{types.Wildcard},
-			ResourceTags: types.Labels{"*": []string{"*"}},
-		},
-		Subscription:  sub,
-		ResourceGroup: types.Wildcard,
-		AzureClientGetter: func(context.Context, string) (azure.Clients, error) {
-			return &mockClients{vmClients: map[string]azure.VirtualMachinesClient{sub: client}}, nil
-		},
-		Logger: logtest.NewLogger(),
-	})
-
-	rgALoc := resourceGroupLocation{resourceGroup: "rg-a", location: "eastus"}
-	rgBLoc := resourceGroupLocation{resourceGroup: "rg-b", location: "eastus"}
-
-	// Enough iterations to shake out Go's map-iteration randomness if the
-	// fix is removed. With the sort in place, every iteration produces the
-	// same sorted-order result.
-	const iterations = 50
-	for i := range iterations {
-		byRG := map[resourceGroupLocation][]*armcompute.VirtualMachine{
-			rgALoc: buildVMs("rg-a"),
-			rgBLoc: buildVMs("rg-b"),
-		}
-
-		filtered, stats := fetcher.filterNonRunning(t.Context(), client, byRG, map[string]azure.PowerState{})
-
-		require.Equal(t, maxPowerStateFallbackLookupsPerFetch, stats.fallbackLookups,
-			"iteration %d: should hit cap after maxPowerStateFallbackLookupsPerFetch lookups", i)
-		require.Equal(t, 4, stats.fallbackLookupsSkipped,
-			"iteration %d: 4 VMs beyond the cap should skip fallback and fail open", i)
-		require.Equal(t, 10, stats.filteredNonRunning,
-			"iteration %d: all 10 fallback lookups return stopped and are filtered", i)
-
-		// Input map must not be mutated.
-		require.Len(t, byRG[rgALoc], 7,
-			"iteration %d: filterNonRunning must not mutate its input — rg-a bucket still has its 7 VMs", i)
-		require.Len(t, byRG[rgBLoc], 7,
-			"iteration %d: filterNonRunning must not mutate its input — rg-b bucket still has its 7 VMs", i)
-
-		// rg-a sorts first → consumes 7 of 10 budget slots → all filtered.
-		require.Empty(t, filtered[rgALoc],
-			"iteration %d: rg-a consumed the fallback budget first; all its stopped VMs should be filtered", i)
-
-		// rg-b uses next 3 slots → filtered; remaining 4 fail open.
-		var rgBNames []string
-		for _, vm := range filtered[rgBLoc] {
-			rgBNames = append(rgBNames, *vm.Name)
-		}
-		require.Equal(t,
-			[]string{"rg-b-vm-3", "rg-b-vm-4", "rg-b-vm-5", "rg-b-vm-6"}, rgBNames,
-			"iteration %d: rg-b's last 4 VMs (after the 3 that got fallback slots) should fail open in slice order", i)
-	}
 }
 
 func makeAzureNode(t *testing.T, name, subscriptionID, vmID string) types.Server {

@@ -37,7 +37,6 @@ import (
 	"time"
 
 	"cloud.google.com/go/container/apiv1/containerpb"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	azruntime "github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v6"
@@ -3169,48 +3168,11 @@ func (m *mockAzureClient) ListVirtualMachines(_ context.Context, _ string) ([]*a
 	return m.vms, nil
 }
 
-func (m *mockAzureClient) ListVirtualMachineStates(_ context.Context) (map[string]azure.PowerState, error) {
+func (m *mockAzureClient) ListNonRunningVirtualMachineStates(_ context.Context) (map[string]azure.PowerState, error) {
 	if m.statuses != nil {
 		return maps.Clone(m.statuses), nil
 	}
-	// Key by vm.ID (the full ARM resource ID), matching the production lookup key in azure_watcher.go.
-	states := make(map[string]azure.PowerState)
-	for _, vm := range m.vms {
-		if vm.ID != nil {
-			states[*vm.ID] = azure.PowerStateRunning
-		}
-	}
-	return states, nil
-}
-
-func (m *mockAzureClient) GetVMPowerState(_ context.Context, resourceGroup, vmName string) (azure.PowerState, error) {
-	for _, vm := range m.vms {
-		if vm == nil || azure.StringVal(vm.Name) != vmName {
-			continue
-		}
-
-		resourceID := azure.StringVal(vm.ID)
-		if resourceID != "" {
-			parsedID, err := arm.ParseResourceID(resourceID)
-			if err == nil && parsedID.ResourceGroupName != resourceGroup {
-				continue
-			}
-		}
-
-		if state, ok := m.statuses[resourceID]; ok {
-			return state, nil
-		}
-		if vm.Properties != nil && vm.Properties.InstanceView != nil {
-			state := azure.ParsePowerState(vm.Properties.InstanceView.Statuses)
-			if state != azure.PowerStateUnknown {
-				return state, nil
-			}
-		}
-
-		return azure.PowerStateRunning, nil
-	}
-
-	return azure.PowerStateUnknown, trace.NotFound("vm %q in resource group %q not found", vmName, resourceGroup)
+	return map[string]azure.PowerState{}, nil
 }
 
 func TestAzureVMDiscovery(t *testing.T) {
@@ -3339,10 +3301,8 @@ func TestAzureVMDiscovery(t *testing.T) {
 
 		vms := []*armcompute.VirtualMachine{runningLinux, deallocatedLinux, stoppedLinux, runningWindows}
 		statuses := map[string]azure.PowerState{
-			aws.ToString(runningLinux.ID):     azure.PowerStateRunning,
 			aws.ToString(deallocatedLinux.ID): azure.PowerStateDeallocated,
 			aws.ToString(stoppedLinux.ID):     azure.PowerStateStopped,
-			aws.ToString(runningWindows.ID):   azure.PowerStateRunning,
 		}
 		return vms, statuses
 	}
