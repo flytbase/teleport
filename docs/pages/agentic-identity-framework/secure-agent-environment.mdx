@@ -154,13 +154,18 @@ workload just as they do with any Teleport-issued certificate. From the
 perspective of the agent, the certificate could be that of a human user or the
 delegated agentic identity.
 
-- TODO: explain how Beams implements the principles spelled out above
-- TODO: Central auth service/proxy service/agent infrastructure allows for
-  auditing, since traffic must flow through central locations, using
-  certificates to authenticate identity, so we can reliably emit telemetry about
-  specific user activity
-- TODO: How identity delegation sessions work (how we can attribute AI agent
-  activity to a user and workload identity)
+### Auditing
+
+Components of a Teleport cluster emit audit events by sending a message to the
+gRPC API on the Teleport Auth Service. Teleport Agents emit audit events
+throughout the lifecycle of a session with a Teleport-protected resource, from
+an authentication attempt to activity within the session and the closure of the
+connection. Because Teleport Agents handle the agentic workload's certificate as
+they would any user certificate, Beams has auditing built in. 
+
+And because `tbot` issues a delegated certificate with the subject information
+of the originalting user, auditors can see which users are managing which
+agentic operations, and these workloads cannot hide behind anonymous logins.
 
 ## Get started with Beams 
 
