@@ -99,6 +99,30 @@ system only needs to emit telemetry that includes this information.
 
 ## Reference implementation
 
+Teleport has implemented the secure agent environment in Teleport Beams. Beams
+allows you to run agentic workloads securely on Teleport-managed infrastructure.
+A beam is a remote environment for running an untrusted workload, designed for
+AI agents. Each beam has the following components:
+
+### Isolation
+
+A beam runs on a Firecracker virtual machine with a time to live
+of under 24 hours. An instance of `tbot` runs on the virtual machine, and
+connects to a Teleport cluster via an SSH reverse tunnel. The `tbot` instance
+runs Teleport VNet, setting up a TUN interface on the VM. The agentic workload
+queries the VNet instance as its DNS resolver, and VNet returns the public
+addresses of Teleport protected resources in your infrastructure. 
+
+From the point of view of the agentic workload, it can attempt a connection to
+any Teleport-protected resource. However, each connection to an infrastructure
+resource must go through the Teleport Proxy Service and Teleport Agents
+protecting the resource. The agentic workload remains isolated from its
+environment but for its connection to Teleport-controlled proxy servers.
+
+Since Teleport-managed infrastructure tears down the virtual machine after the
+TTL, we can minimize the risk of the agent finding and exploiting
+vulnerabilities.
+
 - TODO: explain how Beams implements the principles spelled out above
 - TODO: Every component gets an identity: user certificates, certificate for
   tbot bot, SSH host cert for the beam, workload identity SVID, TLS user cert
@@ -118,3 +142,4 @@ system only needs to emit telemetry that includes this information.
 - TODO: How identity delegation sessions work (how we can attribute AI agent
   activity to a user and workload identity)
 
+Read more about Teleport Beams in the [documentation](../beams/beams.mdx).
