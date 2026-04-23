@@ -6412,12 +6412,6 @@ func (a *ServerWithRoles) scopedCheckAccessToKubeClusterWithVerbs(ctx context.Co
 }
 
 func (a *ServerWithRoles) getScopedKubeServers(ctx context.Context) ([]types.KubeServer, error) {
-	verbs := []string{types.VerbList, types.VerbRead}
-	ruleCtx := a.scopedContext.RuleContext()
-	if err := a.scopedContext.CheckerContext.CheckMaybeHasAccessToRules(&ruleCtx, types.KindKubeServer, verbs...); err != nil {
-		return nil, trace.Wrap(err)
-	}
-
 	servers, err := a.authServer.GetKubernetesServers(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -6425,7 +6419,7 @@ func (a *ServerWithRoles) getScopedKubeServers(ctx context.Context) ([]types.Kub
 	// Filter out kube servers the caller doesn't have access to.
 	var filtered []types.KubeServer
 	for _, server := range servers {
-		err := a.scopedCheckAccessToKubeClusterWithVerbs(ctx, server.GetCluster(), verbs...)
+		err := a.scopedCheckAccessToKubeClusterWithVerbs(ctx, server.GetCluster(), types.VerbList, types.VerbRead)
 		if err != nil && !trace.IsAccessDenied(err) {
 			return nil, trace.Wrap(err)
 		} else if err == nil {
