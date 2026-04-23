@@ -85,16 +85,17 @@ allowing those operations.
 
 ## Audit
 
-- TODO: Why audit is necessary
-- TODO: Identity for agent workloads means you get auditing for free
-- TODO: Central auth service/proxy service/agent infrastructure allows for
-  auditing, since traffic must flow through central locations, using
-  certificates to authenticate identity, so we can reliably emit telemetry about
-  specific user activity
-- TODO: How identity delegation sessions work (how we can attribute AI agent
-  activity to a user and workload identity)
-- TODO: Attributing access to the originating user
-- TODO: Attributing access to the AI agent's workload identity
+The final layer of the secure agent environment is **auditing**. Auditing allows
+administrators to track the operations that an AI agent has performed in a
+system so they can identity potential threats and investigate security breaches.
+
+In the secure agent environment, sandboxing, identity, and access controls make
+it straightforward to implement auditing. With sandboxing, the agent has no way
+to interact with its environment unless the system allows specific operations,
+which need to go through parts of the system that check the agent's identity in
+order to implement access controls. Since these parts of the system already are
+aware of the agent's identity and the operations it is attempting, an auditing
+system only needs to emit telemetry that includes this information.
 
 ## Reference implementation
 
@@ -110,4 +111,10 @@ allowing those operations.
 - TODO: Certificate for agent workload gets the same permissions as originating
   user because of a Teleport-trusted workload (tbot) that continuously updates
   certificates in the isolated environment
+- TODO: Central auth service/proxy service/agent infrastructure allows for
+  auditing, since traffic must flow through central locations, using
+  certificates to authenticate identity, so we can reliably emit telemetry about
+  specific user activity
+- TODO: How identity delegation sessions work (how we can attribute AI agent
+  activity to a user and workload identity)
 
