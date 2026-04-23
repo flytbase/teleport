@@ -135,9 +135,12 @@ Agents and end users):
 - The agentic workload (Workload Identity SVID)
 - The Firecracker VM (SSH host certificate)
 
-`tbot` issues a **delegated identity** to the agentic workload. The workload
-receives certificates with the same subject information as the end user who
-initialized the beam, including the user's login and Teleport roles.
+`tbot` issues a **delegated identity** to the agentic workload. The `tbot`
+configuration specifies the ID of a **delegation session** resource, which
+indicates the user the bot is authorized to delegate identity to. The Auth
+Service looks up the delegation session and issues certificates with the same
+subject information as the end user who initialized the beam, including the
+user's login and Teleport roles.
 
 The `tbot` instance periodically retrieves new certificates from the Teleport
 Auth Service for each Beams component on the VM. When the agentic workload
