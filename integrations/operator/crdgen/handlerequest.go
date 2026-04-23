@@ -262,6 +262,16 @@ func generateSchema(file *File, groupName string, format crdFormatFunc, resp *go
 			},
 		},
 		{
+			name: "RetrievalModel",
+			opts: []resourceSchemaOption{
+				withVersionOverride(types.V1),
+				withValidationRules(apiextv1.ValidationRule{
+					Rule:    "self.metadata.name == 'retrieval-model'",
+					Message: "TeleportRetrievalModelV1 must be named 'retrieval-model'",
+				}),
+			},
+		},
+		{
 			name: "AccessMonitoringRule",
 			opts: []resourceSchemaOption{
 				withVersionOverride(types.V1),

@@ -80,6 +80,7 @@ type SchemaVersion struct {
 	Schema               *Schema
 	additionalColumns    []apiextv1.CustomResourceColumnDefinition
 	additionalRootFields map[string]apiextv1.JSONSchemaProps
+	validationRules      apiextv1.ValidationRules
 }
 
 // Schema is a set of object properties.
@@ -117,6 +118,7 @@ type resourceSchemaConfig struct {
 	additionalRootFields []string
 	kindWithoutVersion   bool
 	additionalColumns    []apiextv1.CustomResourceColumnDefinition
+	validationRules      apiextv1.ValidationRules
 }
 
 type resourceSchemaOption func(*resourceSchemaConfig)
@@ -173,6 +175,16 @@ func withAdditionalColumns(additionalColumns []apiextv1.CustomResourceColumnDefi
 
 	return func(cfg *resourceSchemaConfig) {
 		cfg.additionalColumns = columns
+	}
+}
+
+// withValidationRules adds CEL x-kubernetes-validations rules to the root
+// openAPIV3Schema of the generated CRD. Rules are evaluated by the k8s API
+// server at admission time (k8s ≥ 1.25). Use `self.metadata.name` etc. to
+// access object-level fields from the root scope.
+func withValidationRules(rules ...apiextv1.ValidationRule) resourceSchemaOption {
+	return func(cfg *resourceSchemaConfig) {
+		cfg.validationRules = append(cfg.validationRules, rules...)
 	}
 }
 func (generator *SchemaGenerator) addResource(file *File, name string, opts ...resourceSchemaOption) error {
@@ -285,6 +297,7 @@ func (generator *SchemaGenerator) addResource(file *File, name string, opts ...r
 		Schema:               schema,
 		additionalColumns:    cfg.additionalColumns,
 		additionalRootFields: rootFields,
+		validationRules:      cfg.validationRules,
 	})
 
 	return nil
@@ -607,6 +620,11 @@ func (root RootSchema) CustomResourceDefinition() (apiextv1.CustomResourceDefini
 		// Add any additional root-level fields as siblings to spec/metadata/status.
 		for fieldName, fieldSchema := range schemaVersion.additionalRootFields {
 			version.Schema.OpenAPIV3Schema.Properties[fieldName] = fieldSchema
+		}
+
+		// Add CEL validation rules to the root schema.
+		if len(schemaVersion.validationRules) > 0 {
+			version.Schema.OpenAPIV3Schema.XValidations = schemaVersion.validationRules
 		}
 
 		crd.Spec.Versions = append(crd.Spec.Versions, version)
