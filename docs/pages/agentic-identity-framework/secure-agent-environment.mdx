@@ -104,7 +104,7 @@ allows you to run agentic workloads securely on Teleport-managed infrastructure.
 A beam is a remote environment for running an untrusted workload, designed for
 AI agents. Each beam has the following components:
 
-### Isolation
+### Sandboxing
 
 A beam runs on a Firecracker virtual machine with a time to live
 of under 24 hours. An instance of `tbot` runs on the virtual machine, and
@@ -123,18 +123,28 @@ Since Teleport-managed infrastructure tears down the virtual machine after the
 TTL, we can minimize the risk of the agent finding and exploiting
 vulnerabilities.
 
+### Identity
+
+Every component of Teleport Beams has its own identity. As in any Teleport
+deployment the Auth Service maintains several certificate authorities that it
+uses to issue certificates to end users and Teleport services. In the case of
+Beams, the following components receive certificates (in addition to Teleport
+Agents and end users):
+
+- The `tbot` instance running on the Firecracker VM
+- The agentic workload (Workload Identity SVID)
+- The Firecracker VM (SSH host certificate)
+
+`tbot` issues a **delegated identity** to the agentic workload. The workload
+receives certificates with the same subject information as the end user who
+initialized the beam, including the user's login and Teleport roles.
+
+The `tbot` instance periodically retrieves new certificates from the Teleport
+Auth Service for each Beams component on the VM. When the agentic workload
+attempts to authenticate to a Teleport-protected resource, it presents its
+Teleport-issued certificate for validation against an Auth Service CA.
+
 - TODO: explain how Beams implements the principles spelled out above
-- TODO: Every component gets an identity: user certificates, certificate for
-  tbot bot, SSH host cert for the beam, workload identity SVID, TLS user cert
-  issued for the remote workload
-- TODO: central auth service issues certs
-- TODO: agents check certs against the CA
-- TODO: the remote AI agent uses its certificate to connect to resources. 
-- TODO: A mechanism is in place to allow the agent to transparently connect to
-  resources without being aware of its environment.
-- TODO: Certificate for agent workload gets the same permissions as originating
-  user because of a Teleport-trusted workload (tbot) that continuously updates
-  certificates in the isolated environment
 - TODO: Central auth service/proxy service/agent infrastructure allows for
   auditing, since traffic must flow through central locations, using
   certificates to authenticate identity, so we can reliably emit telemetry about
