@@ -144,6 +144,16 @@ Auth Service for each Beams component on the VM. When the agentic workload
 attempts to authenticate to a Teleport-protected resource, it presents its
 Teleport-issued certificate for validation against an Auth Service CA.
 
+### Access controls
+
+Because an agentic workload running on a beam must use Teleport-controlled
+infrastructure to connect to resources outside the sandbox, and receives a
+Teleport-issued identity, the Teleport-controlled infrastructure can execute
+access controls. Teleport Agents inspect the certificate issued to the agentic
+workload just as they do with any Teleport-issued certificate. From the
+perspective of the agent, the certificate could be that of a human user or the
+delegated agentic identity.
+
 - TODO: explain how Beams implements the principles spelled out above
 - TODO: Central auth service/proxy service/agent infrastructure allows for
   auditing, since traffic must flow through central locations, using
@@ -151,5 +161,7 @@ Teleport-issued certificate for validation against an Auth Service CA.
   specific user activity
 - TODO: How identity delegation sessions work (how we can attribute AI agent
   activity to a user and workload identity)
+
+## Get started with Beams 
 
 Read more about Teleport Beams in the [documentation](../beams/beams.mdx).
