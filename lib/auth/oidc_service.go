@@ -33,6 +33,7 @@ import (
 	apidefaults "github.com/gravitational/teleport/api/defaults"
 	"github.com/gravitational/teleport/api/types"
 	apievents "github.com/gravitational/teleport/api/types/events"
+	apiutils "github.com/gravitational/teleport/api/utils"
 	"github.com/gravitational/teleport/api/utils/keys/hardwarekey"
 	"github.com/gravitational/teleport/lib/auth/authclient"
 	"github.com/gravitational/teleport/lib/authz"
@@ -158,7 +159,6 @@ func (s *oidcService) CreateOIDCAuthRequest(ctx context.Context, req types.OIDCA
 	}
 
 	req.RedirectURL = config.AuthCodeURL(req.StateToken, opts...)
-	req.SetExpiry(s.server.GetClock().Now().UTC().Add(defaults.OIDCAuthRequestTTL))
 
 	if err := s.server.Services.CreateOIDCAuthRequest(ctx, req, defaults.OIDCAuthRequestTTL); err != nil {
 		return nil, trace.Wrap(err)
@@ -533,7 +533,7 @@ func (s *oidcService) mapClaimsToRoles(connector types.OIDCConnector, claims map
 			}
 		}
 	}
-	return utils.Deduplicate(roles), utils.Deduplicate(kubeGroups), utils.Deduplicate(kubeUsers)
+	return apiutils.Deduplicate(roles), apiutils.Deduplicate(kubeGroups), apiutils.Deduplicate(kubeUsers)
 }
 
 // getClaimValues extracts claim values as a string slice.
