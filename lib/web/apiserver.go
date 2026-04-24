@@ -2636,7 +2636,7 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request, p httprou
 	}
 
 	logger.InfoContext(r.Context(), "Callback is redirecting to console login")
-	if len(response.Req.SshPublicKey)+len(response.Req.TlsPublicKey) == 0 {
+	if len(response.Req.SSHPubKey)+len(response.Req.TLSPubKey) == 0 {
 		logger.ErrorContext(r.Context(), "Not a web or console login request")
 		return client.LoginFailedRedirectURL
 	}
