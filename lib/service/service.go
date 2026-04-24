@@ -2570,6 +2570,9 @@ func (process *TeleportProcess) initAuthService() error {
 	}
 	authServer.SetHeadlessAuthenticationWatcher(headlessAuthenticationWatcher)
 
+	// Register OIDC authentication service (FlytBase OSS implementation).
+	authServer.SetOIDCService(auth.NewOIDCService(authServer))
+
 	recordingMetadataService, err := recordingmetadatav1.NewRecordingMetadataService(recordingmetadatav1.RecordingMetadataServiceConfig{
 		Streamer:      authServer,
 		UploadHandler: authServer,
