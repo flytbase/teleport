@@ -13,7 +13,6 @@ package auth
 
 import (
 	"context"
-	"crypto"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,19 +29,18 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/gravitational/teleport"
+	"github.com/gravitational/teleport/api/constants"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
 	"github.com/gravitational/teleport/api/types"
 	apievents "github.com/gravitational/teleport/api/types/events"
+	"github.com/gravitational/teleport/api/utils/keys/hardwarekey"
 	"github.com/gravitational/teleport/lib/auth/authclient"
 	"github.com/gravitational/teleport/lib/authz"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
+	"github.com/gravitational/teleport/lib/loginrule"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/utils"
-
-	"github.com/gravitational/teleport/api/constants"
-	"github.com/gravitational/teleport/lib/auth/hardwarekey"
-	"github.com/gravitational/teleport/lib/loginrule"
 )
 
 // oidcService implements the OIDCService interface using standard OIDC.
@@ -456,18 +454,9 @@ func (s *oidcService) verifyAndExtractClaims(ctx context.Context, rawIDToken str
 		return nil, trace.BadParameter("no matching key found in JWKS for kid=%q", kid)
 	}
 
-	// Extract the public key.
-	var pubKey crypto.PublicKey
-	switch k := keys[0].Key.(type) {
-	case crypto.PublicKey:
-		pubKey = k
-	default:
-		pubKey = keys[0].Key
-	}
-
 	// Verify signature and extract claims.
 	var allClaims map[string]interface{}
-	if err := tok.Claims(pubKey, &allClaims); err != nil {
+	if err := tok.Claims(keys[0].Key, &allClaims); err != nil {
 		return nil, trace.Wrap(err, "verifying ID token signature")
 	}
 
