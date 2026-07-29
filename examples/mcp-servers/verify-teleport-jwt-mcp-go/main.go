@@ -135,13 +135,17 @@ func makeJWTValidator(teleportProxyURL, mcpAppURI string) (*validator.Validator,
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JWKS: %v", err)
 	}
-	fmt.Println("☕ JWT algo:", getJWTAlgorithm(keySet))
+	jwtAlgo, err := getJWTAlgorithm(keySet)
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine JWT algorithm: %v", err)
+	}
+	fmt.Println("☕ JWT algo:", jwtAlgo)
 
 	jwtValidator, err := validator.New(
 		func(context.Context) (interface{}, error) {
 			return keySet, nil
 		},
-		getJWTAlgorithm(keySet),
+		jwtAlgo,
 		teleportClusterName, // Issuer is Teleport cluster name.
 		[]string{mcpAppURI}, // Audience is MCP app URI.
 		validator.WithCustomClaims(func() validator.CustomClaims {
@@ -174,11 +178,30 @@ func getTeleportClusterName(teleportProxyURL string) (string, error) {
 	return find.ClusterName, err
 }
 
-func getJWTAlgorithm(keySet *jose.JSONWebKeySet) validator.SignatureAlgorithm {
-	for _, key := range keySet.Keys {
-		return validator.SignatureAlgorithm(key.Algorithm)
+// allowedJWTAlgorithms is the set of signature algorithms this example
+// trusts. Teleport currently signs app-access (including MCP) JWTs with
+// ES256. We pin the accepted algorithm to this allow-list rather than
+// trusting whatever "alg" the JWKS endpoint happens to report at runtime:
+// deriving the accepted algorithm from the same (potentially
+// untrusted/misconfigured) network response used to fetch the verification
+// keys is the "algorithm confusion" anti-pattern called out in RFC 8725
+// (JWT Best Current Practices).
+var allowedJWTAlgorithms = map[validator.SignatureAlgorithm]bool{
+	validator.ES256: true,
+}
+
+func getJWTAlgorithm(keySet *jose.JSONWebKeySet) (validator.SignatureAlgorithm, error) {
+	if len(keySet.Keys) == 0 {
+		return "", fmt.Errorf("no keys found in JWKS")
 	}
-	return validator.ES256
+	algo := validator.SignatureAlgorithm(keySet.Keys[0].Algorithm)
+	if algo == "" {
+		algo = validator.ES256
+	}
+	if !allowedJWTAlgorithms[algo] {
+		return "", fmt.Errorf("JWKS reports algorithm %q, which is not in the allow-list of trusted algorithms; refusing to start rather than trust an unexpected algorithm from the network", algo)
+	}
+	return algo, nil
 }
 
 func getJWKS(teleportProxyURL string) (*jose.JSONWebKeySet, error) {

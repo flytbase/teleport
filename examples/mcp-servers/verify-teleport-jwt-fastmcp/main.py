@@ -28,6 +28,16 @@ HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8000"))
 TELEPORT_MCP_APP_URI = os.getenv("TELEPORT_MCP_APP_URI", f"mcp+http://{HOST}:{PORT}/mcp")
 
+# Teleport currently signs JWTs for app access (including MCP) with ES256.
+# We pin the accepted algorithm to this allow-list rather than trusting
+# whatever "alg" the JWKS endpoint happens to report at runtime. Deriving
+# the accepted algorithm from the same (potentially untrusted/misconfigured)
+# network response used to fetch the verification keys is the "algorithm
+# confusion" anti-pattern called out in RFC 8725 (JWT Best Current
+# Practices) - a verifier should never let untrusted input decide which
+# algorithm family it trusts.
+ALLOWED_JWT_ALGOS = {"ES256"}
+
 def get_json(url: str):
     with httpx.Client(timeout=5) as client:
         resp = client.get(url)
@@ -45,9 +55,17 @@ def get_jwt_algo(jwks_uri: str) -> str:
         keys = get_json(jwks_uri).get("keys") or []
         if len(keys) == 0:
             raise ValueError("JWKS keys not found")
-        return keys[0].get("alg") or "ES256"
+        algo = keys[0].get("alg") or "ES256"
     except Exception as e:
         raise RuntimeError(f"Failed to find keys from {jwks_uri}") from e
+
+    if algo not in ALLOWED_JWT_ALGOS:
+        raise RuntimeError(
+            f"JWKS at {jwks_uri} reports algorithm {algo!r}, which is not in "
+            f"the allow-list {sorted(ALLOWED_JWT_ALGOS)}. Refusing to start "
+            "rather than trust an unexpected algorithm from the network."
+        )
+    return algo
 
 async def teleport_user_info_from_jwt() -> dict:
     "Read Teleport user info from verified JWT"
